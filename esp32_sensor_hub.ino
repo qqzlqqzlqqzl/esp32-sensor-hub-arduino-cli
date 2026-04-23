@@ -101,8 +101,9 @@ struct SystemState {
   uint8_t cores = 0;
   uint16_t chipRevision = 0;
   int32_t wifiRssiDbm = 0;
+  bool topTaskAvailable = false;
   float topTaskCpuPct = 0.0f;
-  char topTaskName[20] = "--";
+  char topTaskName[20] = "";
   char resetReason[24] = "UNKNOWN";
   uint8_t displayPage = 0;
   char displayPageName[20] = "BOOT";
@@ -647,8 +648,12 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.soundState.textContent = status.mic.online ? `rms ${fmtNum(status.mic.rms, 3)} peak ${status.mic.peak}` : 'Mic offline';
       statusEls.soundState.className = `meta ${status.mic.online ? 'ok' : 'bad'}`;
       statusEls.cpuUsage.textContent = status.system.runtime_ready ? `${fmtNum(status.system.cpu_usage_pct)} %` : '--';
+      const topTaskAvailable = typeof status.system.top_task === 'string'
+        && status.system.top_task.length > 0
+        && typeof status.system.top_task_cpu_pct === 'number'
+        && Number.isFinite(status.system.top_task_cpu_pct);
       statusEls.cpuState.textContent = status.system.runtime_ready
-        ? `RSSI ${status.network.rssi_dbm} dBm / top ${status.system.top_task} ${fmtNum(status.system.top_task_cpu_pct)}%`
+        ? `RSSI ${status.network.rssi_dbm} dBm / top task ${topTaskAvailable ? 'available' : 'unavailable'}`
         : 'runtime stats pending';
       statusEls.cpuState.className = `meta ${status.system.runtime_ready ? 'ok' : 'bad'}`;
       statusEls.alsValue.textContent = status.ap3216c.online ? `ALS ${status.ap3216c.als}` : 'ALS --';
@@ -672,7 +677,9 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.lcdState.className = `meta ${status.display.online ? 'ok' : 'bad'}`;
       statusEls.uptime.textContent = fmtDuration(status.system.uptime_sec);
       statusEls.cpuFreq.textContent = `${status.system.cpu_freq_mhz} MHz`;
-      statusEls.topTask.textContent = `${status.system.top_task} ${fmtNum(status.system.top_task_cpu_pct)}%`;
+      statusEls.topTask.textContent = topTaskAvailable
+        ? `${status.system.top_task} ${fmtNum(status.system.top_task_cpu_pct)}%`
+        : 'N/A';
       statusEls.resetReason.textContent = status.system.reset_reason;
       statusEls.speakerLoopback.textContent = status.speaker.verification_state;
       statusEls.speakerState.textContent = `amp-off ${fmtNum(status.speaker.muted_dbfs)} / amp-on ${fmtNum(status.speaker.enabled_dbfs)} / delta ${fmtNum(status.speaker.delta_dbfs)} / say ${status.speaker.speak_count}${status.speaker.has_spoken_temp ? ` / last ${status.speaker.last_spoken_temp_c}C` : ''}`;
@@ -912,7 +919,9 @@ void initCpuTelemetry() {
   const bool core0Ok = esp_register_freertos_idle_hook_for_cpu(idleHookCore0, 0) == ESP_OK;
   const bool core1Ok = esp_register_freertos_idle_hook_for_cpu(idleHookCore1, 1) == ESP_OK;
   gIdleHooksReady = core0Ok || core1Ok;
-  snprintf(gSystem.topTaskName, sizeof(gSystem.topTaskName), "%s", "idle-est");
+  gSystem.topTaskAvailable = false;
+  gSystem.topTaskCpuPct = 0.0f;
+  gSystem.topTaskName[0] = '\0';
 }
 
 void updateSystemStatsIfDue() {
@@ -965,7 +974,9 @@ void updateSystemStatsIfDue() {
 
   const float idleRatio = constrain(idleRatioSum / static_cast<float>(measuredCores), 0.0f, 1.0f);
   gSystem.cpuUsagePct = (1.0f - idleRatio) * 100.0f;
+  gSystem.topTaskAvailable = false;
   gSystem.topTaskCpuPct = 0.0f;
+  gSystem.topTaskName[0] = '\0';
   gSystem.runtimeReady = true;
 }
 
@@ -1614,10 +1625,20 @@ String statusJson() {
   json += String(gSystem.cores);
   json += ",\"chip_revision\":";
   json += String(gSystem.chipRevision);
-  json += ",\"top_task\":\"";
-  json += gSystem.topTaskName;
-  json += "\",\"top_task_cpu_pct\":";
-  json += String(gSystem.topTaskCpuPct, 2);
+  json += ",\"top_task\":";
+  if (gSystem.topTaskAvailable) {
+    json += "\"";
+    json += gSystem.topTaskName;
+    json += "\"";
+  } else {
+    json += "null";
+  }
+  json += ",\"top_task_cpu_pct\":";
+  if (gSystem.topTaskAvailable) {
+    json += String(gSystem.topTaskCpuPct, 2);
+  } else {
+    json += "null";
+  }
   json += ",\"reset_reason\":\"";
   json += gSystem.resetReason;
   json += "\"},";

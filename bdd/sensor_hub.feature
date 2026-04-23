@@ -13,11 +13,12 @@ Feature: ESP32 Sensor Hub Dashboard
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
+    And posting /api/speak_temperature should increase or otherwise change board playback evidence in status fields such as speak_count
 
-  Scenario: HTML dashboard, board speaker self-test and CSV log are available
+  Scenario: HTML dashboard, board speaker playback controls, self-test and CSV log are available
     Given the board HTTP service is online
     When the client requests / and /api/log.csv
-    Then the HTML should contain the dashboard shell, a board speaker self-test button and a CSV log link
+    Then the HTML should contain the dashboard shell, a board speaker playback button, a board speaker self-test button and a CSV log link
     And the CSV log should contain persisted sensor samples
 
   Scenario: Host USB camera can capture an observation frame

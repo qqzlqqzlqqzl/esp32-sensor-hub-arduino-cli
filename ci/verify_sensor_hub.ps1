@@ -33,6 +33,14 @@ function Invoke-Curl {
     (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS $Url | Out-String)
 }
 
+function Invoke-CurlPost {
+    param(
+        [string]$Url,
+        [int]$TimeoutSeconds = 10
+    )
+    (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS -X POST $Url | Out-String)
+}
+
 function Get-PropertyValue {
     param(
         [object]$Object,
@@ -173,6 +181,197 @@ function Get-SpeakerVerificationSummary {
     return ($Speaker | ConvertTo-Json -Depth 5 -Compress)
 }
 
+function ConvertFrom-EmbeddedJson {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        throw 'No text available for JSON extraction.'
+    }
+
+    $lines = @($Text -split [Environment]::NewLine | Where-Object { $_.Trim().Length -gt 0 })
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $candidate = $lines[$i].Trim()
+        if ($candidate.StartsWith('{') -and $candidate.EndsWith('}')) {
+            return ($candidate | ConvertFrom-Json)
+        }
+    }
+
+    $start = $Text.LastIndexOf('{')
+    if ($start -lt 0) {
+        throw 'No JSON object found in text.'
+    }
+    return ($Text.Substring($start) | ConvertFrom-Json)
+}
+
+function Get-FirstPresentPropertyValue {
+    param(
+        [object]$Object,
+        [string[]]$Names,
+        $Default = $null
+    )
+
+    foreach ($name in $Names) {
+        if (Test-PropertyPresent -Object $Object -Name $name) {
+            return Get-PropertyValue -Object $Object -Name $name -Default $Default
+        }
+    }
+
+    return $Default
+}
+
+function Get-NullableIntValue {
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return [int]$Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-NullableDoubleValue {
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    try {
+        return [double]$Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-SpeakerSpeakCount {
+    param([object]$Speaker)
+
+    return Get-NullableIntValue (Get-FirstPresentPropertyValue -Object $Speaker -Names @(
+        'speak_count',
+        'spoken_count',
+        'playback_count',
+        'temperature_speak_count',
+        'temperature_playback_count',
+        'announce_count'
+    ))
+}
+
+function Get-SpeakerHasSpokenTemperature {
+    param([object]$Speaker)
+
+    if ($null -eq $Speaker) {
+        return $false
+    }
+
+    return [bool](Get-FirstPresentPropertyValue -Object $Speaker -Names @(
+        'has_spoken_temp',
+        'spoken_temperature',
+        'temperature_announced',
+        'has_announced_temperature'
+    ) -Default $false)
+}
+
+function Get-SpeakerLastSpokenTemperature {
+    param([object]$Speaker)
+
+    return Get-NullableDoubleValue (Get-FirstPresentPropertyValue -Object $Speaker -Names @(
+        'last_spoken_temp_c',
+        'last_temperature_spoken_c',
+        'spoken_temp_c',
+        'last_announced_temp_c'
+    ))
+}
+
+function Test-SpeakerPlaybackFieldsPresent {
+    param([object]$Speaker)
+
+    if ($null -eq $Speaker) {
+        return $false
+    }
+
+    return (($null -ne (Get-SpeakerSpeakCount -Speaker $Speaker)) -or
+        (Test-PropertyPresent -Object $Speaker -Name 'speak_running') -or
+        (Test-PropertyPresent -Object $Speaker -Name 'has_spoken_temp') -or
+        ($null -ne (Get-SpeakerLastSpokenTemperature -Speaker $Speaker)))
+}
+
+function Test-SpeakerPlaybackEvidenceChanged {
+    param(
+        [object]$BeforeSpeaker,
+        [object]$AfterSpeaker,
+        [double]$ExpectedTemperatureC
+    )
+
+    if ($null -eq $AfterSpeaker) {
+        return $false
+    }
+
+    $beforeCount = Get-SpeakerSpeakCount -Speaker $BeforeSpeaker
+    $afterCount = Get-SpeakerSpeakCount -Speaker $AfterSpeaker
+    if ($null -ne $afterCount -and (($null -eq $beforeCount) -or ($afterCount -gt $beforeCount))) {
+        return $true
+    }
+
+    $beforeHasSpoken = Get-SpeakerHasSpokenTemperature -Speaker $BeforeSpeaker
+    $afterHasSpoken = Get-SpeakerHasSpokenTemperature -Speaker $AfterSpeaker
+    $beforeTemp = Get-SpeakerLastSpokenTemperature -Speaker $BeforeSpeaker
+    $afterTemp = Get-SpeakerLastSpokenTemperature -Speaker $AfterSpeaker
+    if ($afterHasSpoken) {
+        if (-not $beforeHasSpoken) {
+            return $true
+        }
+        if ($null -ne $afterTemp -and ($null -eq $beforeTemp -or [math]::Abs($afterTemp - $beforeTemp) -gt 0.05)) {
+            return $true
+        }
+        if (($null -eq $afterCount) -and $null -ne $afterTemp -and [math]::Abs($afterTemp - $ExpectedTemperatureC) -le 0.6) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Wait-ForSpeakTemperatureEvidence {
+    param(
+        [string]$Ip,
+        [object]$BeforeStatus,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $beforeSpeaker = Get-PropertyValue -Object $BeforeStatus -Name 'speaker'
+    $expectedTemperatureC = Get-NullableDoubleValue (Get-PropertyValue -Object (Get-PropertyValue -Object $BeforeStatus -Name 'dht11') -Name 'temp_c')
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastStatusText = ''
+    $lastStatusJson = $null
+
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 900
+        $lastStatusText = Invoke-Curl ('http://' + $Ip + '/api/status')
+        $lastStatusJson = $lastStatusText | ConvertFrom-Json
+        if (Test-SpeakerPlaybackEvidenceChanged -BeforeSpeaker $beforeSpeaker -AfterSpeaker $lastStatusJson.speaker -ExpectedTemperatureC $expectedTemperatureC) {
+            return [pscustomobject]@{
+                Passed = $true
+                StatusText = $lastStatusText
+                StatusJson = $lastStatusJson
+                Details = ('Temperature playback evidence changed: ' + (Get-SpeakerVerificationSummary -Speaker $lastStatusJson.speaker))
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Passed = $false
+        StatusText = $lastStatusText
+        StatusJson = $lastStatusJson
+        Details = ('No board-speaker temperature playback evidence changed within {0}s. Before={1} After={2}' -f $TimeoutSeconds, (Get-SpeakerVerificationSummary -Speaker $beforeSpeaker), (Get-SpeakerVerificationSummary -Speaker (Get-PropertyValue -Object $lastStatusJson -Name 'speaker')))
+    }
+}
+
 function Read-SerialLog {
     param(
         [string]$SerialPort,
@@ -283,19 +482,22 @@ try {
     }
 
     if (-not (Test-SpeakerVerificationPassed -Speaker $statusJson.speaker)) {
-        (& curl.exe --noproxy '*' -sS -X POST ('http://' + $ip + '/api/speaker_test') | Out-String) | Out-Null
+        (Invoke-CurlPost ('http://' + $ip + '/api/speaker_test')) | Out-Null
         Start-Sleep -Seconds 2
         $statusText = Invoke-Curl ('http://' + $ip + '/api/status')
         $statusJson = $statusText | ConvertFrom-Json
     }
     $speakerDiagnosticsOk = Test-SpeakerDiagnosticsPresent -Speaker $statusJson.speaker
     $speakerVerificationOk = Test-SpeakerVerificationPassed -Speaker $statusJson.speaker
+    $speakerPlaybackFieldsOk = Test-SpeakerPlaybackFieldsPresent -Speaker $statusJson.speaker
     $statusOk = $statusJson.dht11.online -and
         $statusJson.ap3216c.online -and
         $statusJson.qma6100p.online -and
         $statusJson.mic.online -and
         $statusJson.speaker.online -and
         $speakerDiagnosticsOk -and
+        $speakerVerificationOk -and
+        $speakerPlaybackFieldsOk -and
         $statusJson.chip_temp.online -and
         $statusJson.display.online -and
         $statusJson.storage.mount_ok -and
@@ -305,6 +507,27 @@ try {
         ($statusJson.storage.persisted_samples -ge 1)
     Add-Result 'API Status' $statusOk $statusText
     Add-Result 'Speaker Verification' $speakerVerificationOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
+    Add-Result 'Speaker Playback Fields' $speakerPlaybackFieldsOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
+
+    $speakTriggerText = Invoke-CurlPost ('http://' + $ip + '/api/speak_temperature')
+    $speakTriggerJson = $null
+    try {
+        $speakTriggerJson = $speakTriggerText | ConvertFrom-Json
+    }
+    catch {
+    }
+    $speakAccepted = ($null -eq $speakTriggerJson) -or ((Get-PropertyValue -Object $speakTriggerJson -Name 'accepted' -Default $true) -eq $true)
+    Add-Result 'Speak Temperature Trigger' $speakAccepted $speakTriggerText.Trim()
+    if (-not $speakAccepted) {
+        throw 'Board rejected /api/speak_temperature request.'
+    }
+
+    $speakEvidence = Wait-ForSpeakTemperatureEvidence -Ip $ip -BeforeStatus $statusJson -TimeoutSeconds 15
+    if ($speakEvidence.StatusJson) {
+        $statusText = $speakEvidence.StatusText
+        $statusJson = $speakEvidence.StatusJson
+    }
+    Add-Result 'Speak Temperature Playback' $speakEvidence.Passed $speakEvidence.Details
 
     $historyText = Invoke-Curl ('http://' + $ip + '/api/history')
     $historyJson = $historyText | ConvertFrom-Json
@@ -313,8 +536,10 @@ try {
 
     $htmlText = Invoke-Curl ('http://' + $ip + '/')
     $htmlOk = $htmlText.Contains('ESP32 多传感器看板') -and
+        $htmlText.Contains('播报当前温度') -and
         $htmlText.Contains('板载喇叭自检') -and
         $htmlText.Contains('/api/speaker_test') -and
+        $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('查看 CSV 日志') -and
         $htmlText.Contains('CPU 使用率')
     Add-Result 'HTML Dashboard' $htmlOk ('HTML bytes=' + $htmlText.Length)
@@ -325,7 +550,7 @@ try {
     Add-Result 'CSV Log' $csvOk ('lines=' + $csvLines.Count)
 
     $cameraText = (& python $CameraScriptPath 2>&1 | Out-String)
-    $cameraJson = $cameraText | ConvertFrom-Json
+    $cameraJson = ConvertFrom-EmbeddedJson -Text $cameraText
     $cameraOk = $cameraJson.ok -and (Test-Path $cameraJson.snapshot_path)
     Add-Result 'USB Camera' $cameraOk $cameraText.Trim()
 }
@@ -345,8 +570,8 @@ $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
-$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state and board speaker verification state'
-$reportLines += '- HTML dashboard includes board speaker self-test control and CSV log availability'
+$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- HTML dashboard includes board speaker playback/self-test controls and CSV log availability'
 $reportLines += '- Host USB camera capture writes an image artifact'
 $reportLines += ''
 $reportLines += '## Step Results'
