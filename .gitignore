@@ -1,0 +1,10 @@
+build/
+.arduino/
+*.tmp
+*.bak
+*.pyc
+__pycache__/
+_ref_extract/
+ci/artifacts/
+ci/tts_tmp/
+ci/tts_trim/
