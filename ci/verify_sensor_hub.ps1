@@ -6,7 +6,9 @@ param(
     [string]$WifiSsid,
     [string]$WifiPassword,
     [string]$ReportPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\ci_report.md',
-    [string]$CameraScriptPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\capture_usb_camera.py'
+    [string]$CameraScriptPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\capture_usb_camera.py',
+    [int]$SoakSeconds = 70,
+    [switch]$IncludeCamera
 )
 
 $ErrorActionPreference = 'Stop'
@@ -372,6 +374,273 @@ function Wait-ForSpeakTemperatureEvidence {
     }
 }
 
+function Wait-DashboardStatus {
+    param(
+        [string]$Ip,
+        [int]$TimeoutSeconds = 90
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = ''
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $statusText = Invoke-Curl ('http://' + $Ip + '/api/status') -TimeoutSeconds 5
+            $statusJson = $statusText | ConvertFrom-Json
+            return [pscustomobject]@{
+                Passed = $true
+                StatusText = $statusText
+                StatusJson = $statusJson
+                Details = 'Dashboard responded.'
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    return [pscustomobject]@{
+        Passed = $false
+        StatusText = ''
+        StatusJson = $null
+        Details = ('Dashboard did not respond within {0}s. Last error: {1}' -f $TimeoutSeconds, $lastError)
+    }
+}
+
+function Invoke-FlushAndVerify {
+    param(
+        [string]$Ip,
+        [int]$Attempts = 3
+    )
+
+    $lastText = ''
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            $lastText = Invoke-CurlPost ('http://' + $Ip + '/api/flush') -TimeoutSeconds 8
+            $flushJson = $lastText | ConvertFrom-Json
+            if ($flushJson.flushed -eq $true) {
+                return [pscustomobject]@{
+                    Passed = $true
+                    Text = $lastText
+                    Details = $lastText.Trim()
+                }
+            }
+        }
+        catch {
+            $lastText = $_.Exception.Message
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    return [pscustomobject]@{
+        Passed = $false
+        Text = $lastText
+        Details = $lastText
+    }
+}
+
+function Test-CsvLog {
+    param([string]$Ip)
+
+    $csvText = Invoke-Curl ('http://' + $Ip + '/api/log.csv') -TimeoutSeconds 35
+    $csvLines = @($csvText -split [Environment]::NewLine | Where-Object { $_.Trim().Length -gt 0 })
+    $csvOk = ($csvLines.Count -ge 1) -and $csvLines[0].Contains(',')
+    return [pscustomobject]@{
+        Passed = $csvOk
+        Details = ('lines=' + $csvLines.Count)
+    }
+}
+
+function Test-ConfigPersistence {
+    param([string]$Ip)
+
+    $configUrl = 'http://' + $Ip + '/api/config?temp_high_c=61.5&humidity_high_pct=88.0&sound_high_dbfs=-22.5&light_high_als=3456&cpu_high_pct=92.5&heap_low_bytes=54321&speaker_alerts=0'
+    $saveText = Invoke-CurlPost $configUrl
+    $saveJson = $saveText | ConvertFrom-Json
+    $badAccepted = $false
+    try {
+        $badText = Invoke-CurlPost ('http://' + $Ip + '/api/config?light_high_als=-1&heap_low_bytes=abc') -TimeoutSeconds 5
+        $badJson = $badText | ConvertFrom-Json
+        $badAccepted = ($badJson.saved -eq $true)
+    }
+    catch {
+        $badAccepted = $false
+    }
+    $rangeBadAccepted = $false
+    try {
+        $rangeBadText = Invoke-CurlPost ('http://' + $Ip + '/api/config?light_high_als=-1&heap_low_bytes=1') -TimeoutSeconds 5
+        $rangeBadJson = $rangeBadText | ConvertFrom-Json
+        $rangeBadAccepted = ($rangeBadJson.saved -eq $true)
+    }
+    catch {
+        $rangeBadAccepted = $false
+    }
+    $statusText = Invoke-Curl ('http://' + $Ip + '/api/status')
+    $statusJson = $statusText | ConvertFrom-Json
+    $config = $statusJson.config
+    $ok = $saveJson.saved -and
+        (-not $badAccepted) -and
+        (-not $rangeBadAccepted) -and
+        $config.persisted -and
+        ([math]::Abs([double]$config.temp_high_c - 61.5) -lt 0.01) -and
+        ([math]::Abs([double]$config.humidity_high_pct - 88.0) -lt 0.01) -and
+        ([math]::Abs([double]$config.sound_high_dbfs - (-22.5)) -lt 0.01) -and
+        ([int]$config.light_high_als -eq 3456) -and
+        ([math]::Abs([double]$config.cpu_high_pct - 92.5) -lt 0.01) -and
+        ([int]$config.heap_low_bytes -eq 54321)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        StatusText = $statusText
+        StatusJson = $statusJson
+        Details = ('save=' + $saveText.Trim() + ' invalid_rejected=' + [string](-not $badAccepted) + ' range_invalid_rejected=' + [string](-not $rangeBadAccepted) + ' config=' + ($config | ConvertTo-Json -Depth 5 -Compress))
+    }
+}
+
+function Test-RebootPersistence {
+    param(
+        [string]$Ip,
+        [object]$BeforeStatus
+    )
+
+    $flushBefore = Invoke-FlushAndVerify -Ip $Ip
+    if (-not $flushBefore.Passed) {
+        return [pscustomobject]@{
+            Passed = $false
+            StatusText = ''
+            StatusJson = $null
+            Details = ('Pre-reboot flush failed: ' + $flushBefore.Details)
+        }
+    }
+    Start-Sleep -Seconds 1
+    $beforeText = Invoke-Curl ('http://' + $Ip + '/api/status')
+    $beforeJson = $beforeText | ConvertFrom-Json
+    $beforePersisted = [int](Get-PropertyValue -Object $beforeJson.storage -Name 'persisted_samples' -Default 0)
+    $beforeTempHigh = [double](Get-PropertyValue -Object $beforeJson.config -Name 'temp_high_c' -Default 0)
+    $beforeUptime = [int](Get-PropertyValue -Object $beforeJson.system -Name 'uptime_sec' -Default 0)
+
+    $rebootAccepted = $false
+    try {
+        $rebootText = Invoke-CurlPost ('http://' + $Ip + '/api/reboot') -TimeoutSeconds 3
+        $rebootJson = $rebootText | ConvertFrom-Json
+        $rebootAccepted = ($rebootJson.rebooting -eq $true)
+    }
+    catch {
+    }
+    if (-not $rebootAccepted) {
+        return [pscustomobject]@{
+            Passed = $false
+            StatusText = $beforeText
+            StatusJson = $beforeJson
+            Details = 'Board did not accept /api/reboot.'
+        }
+    }
+
+    Start-Sleep -Seconds 3
+    $deadline = (Get-Date).AddSeconds(130)
+    $after = $null
+    while ((Get-Date) -lt $deadline) {
+        $candidate = Wait-DashboardStatus -Ip $Ip -TimeoutSeconds 8
+        if ($candidate.Passed) {
+            $candidateUptime = [int](Get-PropertyValue -Object $candidate.StatusJson.system -Name 'uptime_sec' -Default 999999)
+            $candidateTempHigh = [double](Get-PropertyValue -Object $candidate.StatusJson.config -Name 'temp_high_c' -Default 0)
+            $candidatePersistedConfig = [bool](Get-PropertyValue -Object $candidate.StatusJson.config -Name 'persisted' -Default $false)
+            if (($candidateUptime -lt $beforeUptime) -and
+                $candidatePersistedConfig -and
+                ([math]::Abs($candidateTempHigh - $beforeTempHigh) -lt 0.01)) {
+                $after = $candidate
+                break
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if ($null -eq $after) {
+        return [pscustomobject]@{
+            Passed = $false
+            StatusText = ''
+            StatusJson = $null
+            Details = ('No reboot evidence with persisted config within timeout. before_uptime={0} before_temp_high={1}' -f $beforeUptime, $beforeTempHigh)
+        }
+    }
+
+    $afterJson = $after.StatusJson
+    $afterPersisted = [int](Get-PropertyValue -Object $afterJson.storage -Name 'persisted_samples' -Default 0)
+    $afterTempHigh = [double](Get-PropertyValue -Object $afterJson.config -Name 'temp_high_c' -Default 0)
+    $afterUptime = [int](Get-PropertyValue -Object $afterJson.system -Name 'uptime_sec' -Default 999999)
+    $historyText = Invoke-Curl ('http://' + $Ip + '/api/history')
+    $historyJson = $historyText | ConvertFrom-Json
+    $ok = $afterJson.storage.mount_ok -and
+        $afterJson.config.persisted -and
+        ($afterPersisted -ge $beforePersisted) -and
+        ([math]::Abs($afterTempHigh - $beforeTempHigh) -lt 0.01) -and
+        ($afterUptime -lt $beforeUptime) -and
+        ($historyJson.rows.Count -ge 1)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        StatusText = $after.StatusText
+        StatusJson = $afterJson
+        Details = ('before_persisted={0} after_persisted={1} before_uptime={2} after_uptime={3} before_temp_high={4} after_temp_high={5} history_rows={6}' -f $beforePersisted, $afterPersisted, $beforeUptime, $afterUptime, $beforeTempHigh, $afterTempHigh, $historyJson.rows.Count)
+    }
+}
+
+function Test-ShortSoak {
+    param(
+        [string]$Ip,
+        [int]$DurationSeconds
+    )
+
+    $beforeText = Invoke-Curl ('http://' + $Ip + '/api/status')
+    $beforeJson = $beforeText | ConvertFrom-Json
+    $beforePersisted = [int](Get-PropertyValue -Object $beforeJson.storage -Name 'persisted_samples' -Default 0)
+    $beforeHeap = [int](Get-PropertyValue -Object $beforeJson.system -Name 'free_heap_bytes' -Default 0)
+    $deadline = (Get-Date).AddSeconds($DurationSeconds)
+    $polls = 0
+    $minFreeHeap = $beforeHeap
+    $lastJson = $beforeJson
+
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 5
+        $statusText = Invoke-Curl ('http://' + $Ip + '/api/status') -TimeoutSeconds 8
+        $lastJson = $statusText | ConvertFrom-Json
+        $freeHeap = [int](Get-PropertyValue -Object $lastJson.system -Name 'free_heap_bytes' -Default 0)
+        if ($freeHeap -gt 0 -and ($minFreeHeap -eq 0 -or $freeHeap -lt $minFreeHeap)) {
+            $minFreeHeap = $freeHeap
+        }
+        $polls++
+    }
+
+    $flush = Invoke-FlushAndVerify -Ip $Ip
+    if (-not $flush.Passed) {
+        return [pscustomobject]@{
+            Passed = $false
+            StatusText = ''
+            StatusJson = $null
+            Details = ('Soak flush failed: ' + $flush.Details)
+        }
+    }
+    Start-Sleep -Seconds 1
+    $afterText = Invoke-Curl ('http://' + $Ip + '/api/status')
+    $afterJson = $afterText | ConvertFrom-Json
+    $afterPersisted = [int](Get-PropertyValue -Object $afterJson.storage -Name 'persisted_samples' -Default 0)
+    $afterHeap = [int](Get-PropertyValue -Object $afterJson.system -Name 'free_heap_bytes' -Default 0)
+    $heapDrop = $beforeHeap - $afterHeap
+    $ok = ($polls -ge 2) -and
+        ($afterPersisted -gt $beforePersisted) -and
+        ($afterJson.storage.write_failures -eq 0) -and
+        ($afterJson.storage.dropped_samples -eq 0) -and
+        ($afterHeap -gt 0) -and
+        ($heapDrop -lt 40000)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        StatusText = $afterText
+        StatusJson = $afterJson
+        Details = ('duration_s={0} polls={1} persisted_before={2} persisted_after={3} heap_before={4} heap_after={5} heap_min_seen={6} heap_drop={7}' -f $DurationSeconds, $polls, $beforePersisted, $afterPersisted, $beforeHeap, $afterHeap, $minFreeHeap, $heapDrop)
+    }
+}
+
 function Read-SerialLog {
     param(
         [string]$SerialPort,
@@ -501,6 +770,8 @@ try {
         $statusJson.chip_temp.online -and
         $statusJson.display.online -and
         $statusJson.storage.mount_ok -and
+        ($null -ne $statusJson.config) -and
+        ($null -ne $statusJson.alerts) -and
         ($statusJson.storage.write_failures -eq 0) -and
         ($statusJson.storage.dropped_samples -eq 0) -and
         $statusJson.system.cpu_freq_mhz -ge 1 -and
@@ -508,6 +779,13 @@ try {
     Add-Result 'API Status' $statusOk $statusText
     Add-Result 'Speaker Verification' $speakerVerificationOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
     Add-Result 'Speaker Playback Fields' $speakerPlaybackFieldsOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
+
+    $configPersistence = Test-ConfigPersistence -Ip $ip
+    if ($configPersistence.StatusJson) {
+        $statusText = $configPersistence.StatusText
+        $statusJson = $configPersistence.StatusJson
+    }
+    Add-Result 'Persistent Config' $configPersistence.Passed $configPersistence.Details
 
     $speakTriggerText = Invoke-CurlPost ('http://' + $ip + '/api/speak_temperature')
     $speakTriggerJson = $null
@@ -538,21 +816,39 @@ try {
     $htmlOk = $htmlText.Contains('ESP32 多传感器看板') -and
         $htmlText.Contains('播报当前温度') -and
         $htmlText.Contains('板载喇叭自检') -and
+        $htmlText.Contains('保存阈值') -and
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
+        $htmlText.Contains('/api/config') -and
         $htmlText.Contains('查看 CSV 日志') -and
         $htmlText.Contains('CPU 使用率')
     Add-Result 'HTML Dashboard' $htmlOk ('HTML bytes=' + $htmlText.Length)
 
-    $csvText = Invoke-Curl ('http://' + $ip + '/api/log.csv')
-    $csvLines = @($csvText -split [Environment]::NewLine | Where-Object { $_.Trim().Length -gt 0 })
-    $csvOk = ($csvLines.Count -ge 1) -and $csvLines[0].Contains(',')
-    Add-Result 'CSV Log' $csvOk ('lines=' + $csvLines.Count)
+    $rebootPersistence = Test-RebootPersistence -Ip $ip -BeforeStatus $statusJson
+    if ($rebootPersistence.StatusJson) {
+        $statusText = $rebootPersistence.StatusText
+        $statusJson = $rebootPersistence.StatusJson
+    }
+    Add-Result 'Reboot Persistence' $rebootPersistence.Passed $rebootPersistence.Details
 
-    $cameraText = (& python $CameraScriptPath 2>&1 | Out-String)
-    $cameraJson = ConvertFrom-EmbeddedJson -Text $cameraText
-    $cameraOk = $cameraJson.ok -and (Test-Path $cameraJson.snapshot_path)
-    Add-Result 'USB Camera' $cameraOk $cameraText.Trim()
+    $soak = Test-ShortSoak -Ip $ip -DurationSeconds $SoakSeconds
+    if ($soak.StatusJson) {
+        $statusText = $soak.StatusText
+        $statusJson = $soak.StatusJson
+    }
+    Add-Result 'Short Soak' $soak.Passed $soak.Details
+
+    $csv = Test-CsvLog -Ip $ip
+    Add-Result 'CSV Log' $csv.Passed $csv.Details
+
+    if ($IncludeCamera) {
+        $cameraText = (& python $CameraScriptPath 2>&1 | Out-String)
+        $cameraJson = ConvertFrom-EmbeddedJson -Text $cameraText
+        $cameraOk = $cameraJson.ok -and (Test-Path $cameraJson.snapshot_path)
+        Add-Result 'USB Camera' $cameraOk $cameraText.Trim()
+    } else {
+        Add-Result 'USB Camera' $true 'Skipped by default; pass -IncludeCamera to verify host USB camera artifacts.'
+    }
 }
 catch {
     Add-Result 'Unhandled Failure' $false $_.Exception.Message
@@ -570,9 +866,11 @@ $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
-$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, board speaker verification state, and board speaker playback evidence'
-$reportLines += '- HTML dashboard includes board speaker playback/self-test controls and CSV log availability'
-$reportLines += '- Host USB camera capture writes an image artifact'
+$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
+$reportLines += '- LittleFS data and config survive a board reboot'
+$reportLines += '- Short soak verifies continued sampling, storage writes and heap stability'
+$reportLines += '- Host USB camera capture is optional and skipped unless requested'
 $reportLines += ''
 $reportLines += '## Step Results'
 foreach ($result in $results) {

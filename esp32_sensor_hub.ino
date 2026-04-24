@@ -53,6 +53,9 @@ constexpr unsigned long kSerialReportIntervalMs = 10000;
 constexpr size_t kHistoryCapacity = 120;
 constexpr char kLogPath[] = "/sensor_log.csv";
 constexpr char kRotatedLogPath[] = "/sensor_log.old.csv";
+constexpr char kConfigPath[] = "/hub_config.txt";
+constexpr char kConfigTmpPath[] = "/hub_config.tmp";
+constexpr char kConfigBackupPath[] = "/hub_config.bak";
 constexpr size_t kMaxLogFileBytes = 512 * 1024;
 constexpr size_t kMaxPendingLogBytes = 24 * 1024;
 constexpr size_t kRuntimeTrackCapacity = 32;
@@ -89,6 +92,30 @@ bool gChipTempReady = false;
 bool gDisplayReady = false;
 bool gSpeakerTestRequested = false;
 bool gSpeakTemperatureRequested = false;
+bool gRebootRequested = false;
+bool gConfigPersisted = false;
+
+struct HubConfig {
+  float tempHighC = 32.0f;
+  float humidityHighPct = 80.0f;
+  float soundHighDbfs = -35.0f;
+  uint16_t lightHighAls = 2000;
+  float cpuHighPct = 85.0f;
+  uint32_t heapLowBytes = 60000;
+  bool speakerAlerts = false;
+} gConfig;
+
+struct AlertState {
+  bool active = false;
+  uint8_t count = 0;
+  bool tempHigh = false;
+  bool humidityHigh = false;
+  bool soundHigh = false;
+  bool lightHigh = false;
+  bool cpuHigh = false;
+  bool heapLow = false;
+  char summary[120] = "OK";
+} gAlerts;
 
 struct SystemState {
   bool runtimeReady = false;
@@ -156,6 +183,7 @@ struct SampleRow {
   uint32_t maxAllocHeapBytes = 0;
   uint16_t cpuFreqMhz = 0;
   uint8_t displayPage = 0;
+  uint8_t alertCount = 0;
 };
 
 SampleRow gHistory[kHistoryCapacity];
@@ -254,6 +282,25 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       gap: 8px;
     }
     .btn:hover { border-color: rgba(97, 180, 255, 0.7); }
+    input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid rgba(50, 79, 106, 0.75);
+      border-radius: 6px;
+      background: rgba(8, 14, 22, 0.96);
+      color: var(--text);
+      padding: 8px 9px;
+      font-size: 13px;
+    }
+    .alert-line {
+      border: 1px solid rgba(255, 107, 107, 0.55);
+      background: rgba(255, 107, 107, 0.10);
+      color: #ffd7d7;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      display: none;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -350,8 +397,10 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     <div class="toolbar">
       <button id="speakTempBtn" class="btn" type="button">播报当前温度</button>
       <button id="speakerSelfTestBtn" class="btn" type="button">板载喇叭自检</button>
+      <button id="saveConfigBtn" class="btn" type="button">保存阈值</button>
       <a class="btn" href="/api/log.csv" target="_blank" rel="noreferrer">查看 CSV 日志</a>
     </div>
+    <div id="alertLine" class="alert-line"></div>
 
     <div class="grid">
       <section class="card span-3">
@@ -421,6 +470,23 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="value sm" id="speakerLoopback">--</div>
         <div class="meta" id="speakerState">waiting</div>
       </section>
+      <section class="card span-8">
+        <div class="label">告警阈值</div>
+        <div class="kv">
+          <div><span>温度上限 C</span><input id="cfgTempHigh" type="number" step="0.1"></div>
+          <div><span>湿度上限 %</span><input id="cfgHumidityHigh" type="number" step="0.1"></div>
+          <div><span>声音上限 dBFS</span><input id="cfgSoundHigh" type="number" step="0.1"></div>
+          <div><span>光照上限 ALS</span><input id="cfgLightHigh" type="number" step="1"></div>
+          <div><span>CPU 上限 %</span><input id="cfgCpuHigh" type="number" step="0.1"></div>
+          <div><span>Heap 下限 bytes</span><input id="cfgHeapLow" type="number" step="1024"></div>
+        </div>
+        <div class="meta" id="configState">config loading...</div>
+      </section>
+      <section class="card span-4">
+        <div class="label">告警状态</div>
+        <div class="value sm" id="alertCount">0</div>
+        <div class="meta" id="alertSummary">OK</div>
+      </section>
 
       <section class="card span-6">
         <div class="label">温湿度与芯片温度</div>
@@ -478,9 +544,20 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       resetReason: document.getElementById('resetReason'),
       speakerLoopback: document.getElementById('speakerLoopback'),
       speakerState: document.getElementById('speakerState'),
+      alertLine: document.getElementById('alertLine'),
+      alertCount: document.getElementById('alertCount'),
+      alertSummary: document.getElementById('alertSummary'),
+      configState: document.getElementById('configState'),
+      cfgTempHigh: document.getElementById('cfgTempHigh'),
+      cfgHumidityHigh: document.getElementById('cfgHumidityHigh'),
+      cfgSoundHigh: document.getElementById('cfgSoundHigh'),
+      cfgLightHigh: document.getElementById('cfgLightHigh'),
+      cfgCpuHigh: document.getElementById('cfgCpuHigh'),
+      cfgHeapLow: document.getElementById('cfgHeapLow'),
       rows: document.getElementById('rows'),
       speakTempBtn: document.getElementById('speakTempBtn'),
       speakerSelfTestBtn: document.getElementById('speakerSelfTestBtn'),
+      saveConfigBtn: document.getElementById('saveConfigBtn'),
     };
     const charts = {
       climate: document.getElementById('climateChart').getContext('2d'),
@@ -488,6 +565,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       motion: document.getElementById('motionChart').getContext('2d'),
     };
     let latestStatus = null;
+    let configInputsDirty = false;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
     function fmtNum(v, digits = 1) { return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits); }
@@ -626,6 +704,35 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         statusEls.speakerState.textContent = 'self test trigger failed';
       }
     });
+    statusEls.saveConfigBtn.addEventListener('click', async () => {
+      const params = new URLSearchParams({
+        temp_high_c: statusEls.cfgTempHigh.value,
+        humidity_high_pct: statusEls.cfgHumidityHigh.value,
+        sound_high_dbfs: statusEls.cfgSoundHigh.value,
+        light_high_als: statusEls.cfgLightHigh.value,
+        cpu_high_pct: statusEls.cfgCpuHigh.value,
+        heap_low_bytes: statusEls.cfgHeapLow.value,
+      });
+      try {
+        statusEls.configState.textContent = 'saving...';
+        const res = await fetch(`/api/config?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+        statusEls.configState.textContent = res.ok ? 'saved to LittleFS' : 'save failed';
+        if (res.ok) configInputsDirty = false;
+        setTimeout(loop, 600);
+      } catch (error) {
+        statusEls.configState.textContent = 'save failed';
+      }
+    });
+    [
+      statusEls.cfgTempHigh,
+      statusEls.cfgHumidityHigh,
+      statusEls.cfgSoundHigh,
+      statusEls.cfgLightHigh,
+      statusEls.cfgCpuHigh,
+      statusEls.cfgHeapLow,
+    ].forEach(input => input.addEventListener('input', () => {
+      configInputsDirty = true;
+    }));
 
     async function refresh() {
       const [statusRes, historyRes] = await Promise.all([
@@ -684,6 +791,22 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.speakerLoopback.textContent = status.speaker.verification_state;
       statusEls.speakerState.textContent = `amp-off ${fmtNum(status.speaker.muted_dbfs)} / amp-on ${fmtNum(status.speaker.enabled_dbfs)} / delta ${fmtNum(status.speaker.delta_dbfs)} / say ${status.speaker.speak_count}${status.speaker.has_spoken_temp ? ` / last ${status.speaker.last_spoken_temp_c}C` : ''}`;
       statusEls.speakerState.className = `meta ${status.speaker.verification_state === 'PASS' ? 'ok' : status.speaker.verification_state === 'FAIL' ? 'bad' : ''}`;
+      statusEls.alertCount.textContent = status.alerts.count;
+      statusEls.alertSummary.textContent = status.alerts.summary;
+      statusEls.alertSummary.className = `meta ${status.alerts.active ? 'bad' : 'ok'}`;
+      statusEls.alertLine.style.display = status.alerts.active ? 'block' : 'none';
+      statusEls.alertLine.textContent = status.alerts.summary;
+      if (status.config) {
+        if (!configInputsDirty) {
+          statusEls.cfgTempHigh.value = status.config.temp_high_c;
+          statusEls.cfgHumidityHigh.value = status.config.humidity_high_pct;
+          statusEls.cfgSoundHigh.value = status.config.sound_high_dbfs;
+          statusEls.cfgLightHigh.value = status.config.light_high_als;
+          statusEls.cfgCpuHigh.value = status.config.cpu_high_pct;
+          statusEls.cfgHeapLow.value = status.config.heap_low_bytes;
+        }
+        statusEls.configState.textContent = `config persisted ${status.config.persisted ? 'yes' : 'defaults'}`;
+      }
 
       const rows = history.rows || [];
       renderRows(rows.slice().reverse().slice(0, 8));
@@ -754,6 +877,260 @@ String currentNetworkMode() {
 
 int32_t currentRssiDbm() {
   return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+}
+
+float clampFloat(float value, float minValue, float maxValue) {
+  if (!isfinite(value)) {
+    return minValue;
+  }
+  return constrain(value, minValue, maxValue);
+}
+
+uint32_t clampUint32(uint32_t value, uint32_t minValue, uint32_t maxValue) {
+  if (value < minValue) {
+    return minValue;
+  }
+  if (value > maxValue) {
+    return maxValue;
+  }
+  return value;
+}
+
+bool parseFloatStrict(String value, float minValue, float maxValue, float *out) {
+  value.trim();
+  if (!out || value.length() == 0) {
+    return false;
+  }
+
+  char *end = nullptr;
+  const float parsed = strtof(value.c_str(), &end);
+  if (end == value.c_str() || !isfinite(parsed)) {
+    return false;
+  }
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+    end++;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+  *out = constrain(parsed, minValue, maxValue);
+  return true;
+}
+
+bool parseLongStrict(String value, long minValue, long maxValue, long *out) {
+  value.trim();
+  if (!out || value.length() == 0) {
+    return false;
+  }
+
+  char *end = nullptr;
+  const long parsed = strtol(value.c_str(), &end, 10);
+  if (end == value.c_str()) {
+    return false;
+  }
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+    end++;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+  if (parsed < minValue || parsed > maxValue) {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool parseConfigLine(const String &line) {
+  const int equalsIndex = line.indexOf('=');
+  if (equalsIndex <= 0) {
+    return false;
+  }
+
+  const String key = line.substring(0, equalsIndex);
+  const String value = line.substring(equalsIndex + 1);
+  float parsedFloat = 0.0f;
+  long parsedLong = 0;
+  if (key == "temp_high_c") {
+    if (!parseFloatStrict(value, -20.0f, 80.0f, &parsedFloat)) {
+      return false;
+    }
+    gConfig.tempHighC = parsedFloat;
+  } else if (key == "humidity_high_pct") {
+    if (!parseFloatStrict(value, 0.0f, 100.0f, &parsedFloat)) {
+      return false;
+    }
+    gConfig.humidityHighPct = parsedFloat;
+  } else if (key == "sound_high_dbfs") {
+    if (!parseFloatStrict(value, -120.0f, 0.0f, &parsedFloat)) {
+      return false;
+    }
+    gConfig.soundHighDbfs = parsedFloat;
+  } else if (key == "light_high_als") {
+    if (!parseLongStrict(value, 1, 65535, &parsedLong)) {
+      return false;
+    }
+    gConfig.lightHighAls = static_cast<uint16_t>(parsedLong);
+  } else if (key == "cpu_high_pct") {
+    if (!parseFloatStrict(value, 0.0f, 100.0f, &parsedFloat)) {
+      return false;
+    }
+    gConfig.cpuHighPct = parsedFloat;
+  } else if (key == "heap_low_bytes") {
+    if (!parseLongStrict(value, 8192, 320000, &parsedLong)) {
+      return false;
+    }
+    gConfig.heapLowBytes = static_cast<uint32_t>(parsedLong);
+  } else if (key == "speaker_alerts") {
+    if (!parseLongStrict(value, 0, 1, &parsedLong)) {
+      return false;
+    }
+    gConfig.speakerAlerts = parsedLong != 0;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool loadConfigFile(const char *path) {
+  if (!path || !LittleFS.exists(path)) {
+    return false;
+  }
+
+  File file = LittleFS.open(path, "r");
+  if (!file) {
+    return false;
+  }
+
+  bool loadedAny = false;
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {
+      continue;
+    }
+    loadedAny = parseConfigLine(line) || loadedAny;
+  }
+  file.close();
+  return loadedAny;
+}
+
+void loadConfigFromLittleFs() {
+  if (!gLittleFsReady) {
+    gConfigPersisted = false;
+    return;
+  }
+
+  gConfigPersisted = loadConfigFile(kConfigPath) || loadConfigFile(kConfigBackupPath);
+}
+
+bool saveConfigToLittleFs() {
+  if (!gLittleFsReady) {
+    return false;
+  }
+
+  LittleFS.remove(kConfigTmpPath);
+  File file = LittleFS.open(kConfigTmpPath, "w");
+  if (!file) {
+    gStorageWriteFailures++;
+    return false;
+  }
+
+  file.printf("temp_high_c=%.2f\n", gConfig.tempHighC);
+  file.printf("humidity_high_pct=%.2f\n", gConfig.humidityHighPct);
+  file.printf("sound_high_dbfs=%.2f\n", gConfig.soundHighDbfs);
+  file.printf("light_high_als=%u\n", static_cast<unsigned int>(gConfig.lightHighAls));
+  file.printf("cpu_high_pct=%.2f\n", gConfig.cpuHighPct);
+  file.printf("heap_low_bytes=%lu\n", static_cast<unsigned long>(gConfig.heapLowBytes));
+  file.printf("speaker_alerts=%u\n", gConfig.speakerAlerts ? 1 : 0);
+  file.flush();
+  const bool writeOk = file.getWriteError() == 0 && file.size() > 20;
+  file.close();
+
+  if (!writeOk) {
+    LittleFS.remove(kConfigTmpPath);
+    gStorageWriteFailures++;
+    gConfigPersisted = LittleFS.exists(kConfigPath);
+    return false;
+  }
+
+  LittleFS.remove(kConfigBackupPath);
+  if (LittleFS.exists(kConfigPath) && !LittleFS.rename(kConfigPath, kConfigBackupPath)) {
+    LittleFS.remove(kConfigTmpPath);
+    gStorageWriteFailures++;
+    gConfigPersisted = true;
+    return false;
+  }
+
+  const bool ok = LittleFS.rename(kConfigTmpPath, kConfigPath);
+  if (!ok) {
+    if (LittleFS.exists(kConfigBackupPath)) {
+      LittleFS.rename(kConfigBackupPath, kConfigPath);
+    }
+    gStorageWriteFailures++;
+    gConfigPersisted = LittleFS.exists(kConfigPath);
+    return false;
+  }
+
+  LittleFS.remove(kConfigBackupPath);
+  gConfigPersisted = true;
+  return ok;
+}
+
+void appendAlertName(char *buffer, size_t bufferSize, const char *name, bool *first) {
+  if (!buffer || !name || !first) {
+    return;
+  }
+  const size_t used = strlen(buffer);
+  if (used >= bufferSize - 1) {
+    return;
+  }
+  snprintf(buffer + used, bufferSize - used, "%s%s", *first ? "" : ", ", name);
+  *first = false;
+}
+
+void updateAlerts() {
+  gAlerts.tempHigh = gDht.online && gDht.tempC >= gConfig.tempHighC;
+  gAlerts.humidityHigh = gDht.online && gDht.humidity >= gConfig.humidityHighPct;
+  gAlerts.soundHigh = gMic.online && gMic.dbfs >= gConfig.soundHighDbfs;
+  gAlerts.lightHigh = gLight.online && gLight.als >= gConfig.lightHighAls;
+  gAlerts.cpuHigh = gSystem.runtimeReady && gSystem.cpuUsagePct >= gConfig.cpuHighPct;
+  gAlerts.heapLow = gSystem.freeHeapBytes > 0 && gSystem.freeHeapBytes <= gConfig.heapLowBytes;
+
+  gAlerts.count = 0;
+  gAlerts.count += gAlerts.tempHigh ? 1 : 0;
+  gAlerts.count += gAlerts.humidityHigh ? 1 : 0;
+  gAlerts.count += gAlerts.soundHigh ? 1 : 0;
+  gAlerts.count += gAlerts.lightHigh ? 1 : 0;
+  gAlerts.count += gAlerts.cpuHigh ? 1 : 0;
+  gAlerts.count += gAlerts.heapLow ? 1 : 0;
+  gAlerts.active = gAlerts.count > 0;
+
+  if (!gAlerts.active) {
+    snprintf(gAlerts.summary, sizeof(gAlerts.summary), "OK");
+    return;
+  }
+
+  gAlerts.summary[0] = '\0';
+  bool first = true;
+  if (gAlerts.tempHigh) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "TEMP", &first);
+  }
+  if (gAlerts.humidityHigh) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "HUMI", &first);
+  }
+  if (gAlerts.soundHigh) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "SOUND", &first);
+  }
+  if (gAlerts.lightHigh) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "LIGHT", &first);
+  }
+  if (gAlerts.cpuHigh) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "CPU", &first);
+  }
+  if (gAlerts.heapLow) {
+    appendAlertName(gAlerts.summary, sizeof(gAlerts.summary), "HEAP", &first);
+  }
 }
 
 bool isIdleTaskName(const char *name) {
@@ -994,6 +1371,9 @@ void updateDisplayIfDue() {
   lcdPrintLine(6, LCD_FONT_16, CYAN, "ESP32 SENSOR HUB");
   lcdPrintLine(26, LCD_FONT_12, WHITE, "IP %s", currentDashboardIp().c_str());
   lcdPrintLine(42, LCD_FONT_12, WHITE, "PAGE %u %s", gSystem.displayPage + 1, gSystem.displayPageName);
+  if (gAlerts.active) {
+    lcdPrintLine(56, LCD_FONT_12, RED, "ALERT %u %s", static_cast<unsigned int>(gAlerts.count), gAlerts.summary);
+  }
 
   switch (gSystem.displayPage) {
     case 0:
@@ -1028,7 +1408,7 @@ void updateDisplayIfDue() {
   }
 }
 
-void flushPendingLog();
+bool flushPendingLog();
 
 bool trimPendingLog(size_t incomingBytes) {
   if (incomingBytes > kMaxPendingLogBytes) {
@@ -1078,7 +1458,7 @@ void appendLog(const SampleRow &row) {
   char line[420];
   snprintf(line,
            sizeof(line),
-           "%lu,%lu,%d,%.2f,%.2f,%d,%.2f,%d,%u,%u,%u,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%.2f,%.5f,%d,%.2f,%lu,%lu,%lu,%u,%u\n",
+           "%lu,%lu,%d,%.2f,%.2f,%d,%.2f,%d,%u,%u,%u,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%.2f,%.5f,%d,%.2f,%lu,%lu,%lu,%u,%u,%u\n",
            static_cast<unsigned long>(row.seq),
            static_cast<unsigned long>(row.epoch),
            row.dhtOnline ? 1 : 0,
@@ -1106,22 +1486,24 @@ void appendLog(const SampleRow &row) {
            static_cast<unsigned long>(row.minFreeHeapBytes),
            static_cast<unsigned long>(row.maxAllocHeapBytes),
            static_cast<unsigned int>(row.cpuFreqMhz),
-           static_cast<unsigned int>(row.displayPage));
+           static_cast<unsigned int>(row.displayPage),
+           static_cast<unsigned int>(row.alertCount));
   if (trimPendingLog(strlen(line))) {
     gPendingLog += line;
   }
 }
 
-void flushPendingLog() {
+bool flushPendingLog() {
+  const uint32_t failuresBefore = gStorageWriteFailures;
   if (!gLittleFsReady || gPendingLog.isEmpty()) {
-    return;
+    return gLittleFsReady && gPendingLog.isEmpty();
   }
 
   rotateLogIfNeeded();
   File logFile = LittleFS.open(kLogPath, FILE_APPEND);
   if (!logFile) {
     gStorageWriteFailures++;
-    return;
+    return false;
   }
 
   size_t consumed = 0;
@@ -1155,6 +1537,7 @@ void flushPendingLog() {
     gPersistedLastSampleEpoch = lastPersistedEpoch;
     gPendingLog.remove(0, consumed);
   }
+  return gPendingLog.isEmpty() && gStorageWriteFailures == failuresBefore;
 }
 
 bool parseLogLine(const String &line, SampleRow *row) {
@@ -1186,9 +1569,10 @@ bool parseLogLine(const String &line, SampleRow *row) {
   unsigned long maxAllocHeapBytes = 0;
   unsigned int cpuFreqMhz = 0;
   unsigned int displayPage = 0;
+  unsigned int alertCount = 0;
 
   int parsed = sscanf(line.c_str(),
-                      "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u",
+                      "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u,%u",
                       &seq,
                       &epoch,
                       &dhtOnline,
@@ -1216,8 +1600,41 @@ bool parseLogLine(const String &line, SampleRow *row) {
                       &minFreeHeapBytes,
                       &maxAllocHeapBytes,
                       &cpuFreqMhz,
-                      &displayPage);
-  if (parsed != 28) {
+                      &displayPage,
+                      &alertCount);
+  if (parsed != 29) {
+    parsed = sscanf(line.c_str(),
+                    "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u",
+                    &seq,
+                    &epoch,
+                    &dhtOnline,
+                    &dhtTemp,
+                    &dhtHumidity,
+                    &chipOnline,
+                    &chipTemp,
+                    &lightOnline,
+                    &als,
+                    &ir,
+                    &ps,
+                    &accelOnline,
+                    &ax,
+                    &ay,
+                    &az,
+                    &ag,
+                    &pitch,
+                    &roll,
+                    &micOnline,
+                    &micDbfs,
+                    &micRms,
+                    &micPeak,
+                    &cpuUsagePct,
+                    &freeHeapBytes,
+                    &minFreeHeapBytes,
+                    &maxAllocHeapBytes,
+                    &cpuFreqMhz,
+                    &displayPage);
+  }
+  if (parsed != 28 && parsed != 29) {
     parsed = sscanf(line.c_str(),
                     "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d",
                     &seq,
@@ -1243,7 +1660,7 @@ bool parseLogLine(const String &line, SampleRow *row) {
                     &micRms,
                     &micPeak);
   }
-  if (parsed != 22 && parsed != 28) {
+  if (parsed != 22 && parsed != 28 && parsed != 29) {
     return false;
   }
 
@@ -1275,6 +1692,7 @@ bool parseLogLine(const String &line, SampleRow *row) {
   row->maxAllocHeapBytes = static_cast<uint32_t>(maxAllocHeapBytes);
   row->cpuFreqMhz = static_cast<uint16_t>(cpuFreqMhz);
   row->displayPage = static_cast<uint8_t>(displayPage);
+  row->alertCount = static_cast<uint8_t>(alertCount);
   return true;
 }
 
@@ -1325,6 +1743,7 @@ void initLittleFs() {
   gLittleFsMountError = !gLittleFsReady;
   if (gLittleFsReady) {
     loadHistoryFromLittleFs();
+    loadConfigFromLittleFs();
   }
 }
 
@@ -1514,6 +1933,7 @@ void publishSampleIfDue() {
   row.maxAllocHeapBytes = gSystem.maxAllocHeapBytes;
   row.cpuFreqMhz = static_cast<uint16_t>(gSystem.cpuFreqMhz);
   row.displayPage = gSystem.displayPage;
+  row.alertCount = gAlerts.count;
 
   pushHistory(row);
   appendLog(row);
@@ -1557,6 +1977,42 @@ String statusJson() {
   json += String(gDroppedSamples);
   json += ",\"mount_ok\":";
   json += gLittleFsReady ? "true" : "false";
+  json += "},";
+  json += "\"config\":{\"persisted\":";
+  json += gConfigPersisted ? "true" : "false";
+  json += ",\"temp_high_c\":";
+  json += String(gConfig.tempHighC, 2);
+  json += ",\"humidity_high_pct\":";
+  json += String(gConfig.humidityHighPct, 2);
+  json += ",\"sound_high_dbfs\":";
+  json += String(gConfig.soundHighDbfs, 2);
+  json += ",\"light_high_als\":";
+  json += String(gConfig.lightHighAls);
+  json += ",\"cpu_high_pct\":";
+  json += String(gConfig.cpuHighPct, 2);
+  json += ",\"heap_low_bytes\":";
+  json += String(gConfig.heapLowBytes);
+  json += ",\"speaker_alerts\":";
+  json += gConfig.speakerAlerts ? "true" : "false";
+  json += "},";
+  json += "\"alerts\":{\"active\":";
+  json += gAlerts.active ? "true" : "false";
+  json += ",\"count\":";
+  json += String(gAlerts.count);
+  json += ",\"summary\":\"";
+  json += gAlerts.summary;
+  json += "\",\"temp_high\":";
+  json += gAlerts.tempHigh ? "true" : "false";
+  json += ",\"humidity_high\":";
+  json += gAlerts.humidityHigh ? "true" : "false";
+  json += ",\"sound_high\":";
+  json += gAlerts.soundHigh ? "true" : "false";
+  json += ",\"light_high\":";
+  json += gAlerts.lightHigh ? "true" : "false";
+  json += ",\"cpu_high\":";
+  json += gAlerts.cpuHigh ? "true" : "false";
+  json += ",\"heap_low\":";
+  json += gAlerts.heapLow ? "true" : "false";
   json += "},";
   json += "\"dht11\":{\"online\":";
   json += gDht.online ? "true" : "false";
@@ -1759,6 +2215,8 @@ String historyJson() {
     json += String(row.cpuFreqMhz);
     json += ",\"display_page\":";
     json += String(row.displayPage);
+    json += ",\"alert_count\":";
+    json += String(row.alertCount);
     json += "}";
   }
   json += "]}";
@@ -1793,6 +2251,120 @@ void handleSpeakTemperature() {
   }
   gSpeakTemperatureRequested = true;
   server.send(202, "application/json; charset=utf-8", "{\"accepted\":true}");
+}
+
+void handleConfig() {
+  if (server.method() == HTTP_POST) {
+    HubConfig nextConfig = gConfig;
+    float parsedFloat = 0.0f;
+    long parsedLong = 0;
+    if (server.hasArg("temp_high_c")) {
+      if (!parseFloatStrict(server.arg("temp_high_c"), -20.0f, 80.0f, &parsedFloat)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid temp_high_c\"}");
+        return;
+      }
+      nextConfig.tempHighC = parsedFloat;
+    }
+    if (server.hasArg("humidity_high_pct")) {
+      if (!parseFloatStrict(server.arg("humidity_high_pct"), 0.0f, 100.0f, &parsedFloat)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid humidity_high_pct\"}");
+        return;
+      }
+      nextConfig.humidityHighPct = parsedFloat;
+    }
+    if (server.hasArg("sound_high_dbfs")) {
+      if (!parseFloatStrict(server.arg("sound_high_dbfs"), -120.0f, 0.0f, &parsedFloat)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid sound_high_dbfs\"}");
+        return;
+      }
+      nextConfig.soundHighDbfs = parsedFloat;
+    }
+    if (server.hasArg("light_high_als")) {
+      if (!parseLongStrict(server.arg("light_high_als"), 1, 65535, &parsedLong)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid light_high_als\"}");
+        return;
+      }
+      nextConfig.lightHighAls = static_cast<uint16_t>(parsedLong);
+    }
+    if (server.hasArg("cpu_high_pct")) {
+      if (!parseFloatStrict(server.arg("cpu_high_pct"), 0.0f, 100.0f, &parsedFloat)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid cpu_high_pct\"}");
+        return;
+      }
+      nextConfig.cpuHighPct = parsedFloat;
+    }
+    if (server.hasArg("heap_low_bytes")) {
+      if (!parseLongStrict(server.arg("heap_low_bytes"), 8192, 320000, &parsedLong)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid heap_low_bytes\"}");
+        return;
+      }
+      nextConfig.heapLowBytes = static_cast<uint32_t>(parsedLong);
+    }
+    if (server.hasArg("speaker_alerts")) {
+      if (!parseLongStrict(server.arg("speaker_alerts"), 0, 1, &parsedLong)) {
+        server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid speaker_alerts\"}");
+        return;
+      }
+      nextConfig.speakerAlerts = parsedLong != 0;
+    }
+    gConfig = nextConfig;
+    updateAlerts();
+    const bool saved = saveConfigToLittleFs();
+    server.send(saved ? 200 : 500, "application/json; charset=utf-8", saved ? "{\"saved\":true}" : "{\"saved\":false}");
+    return;
+  }
+
+  String json;
+  json.reserve(260);
+  json += "{\"persisted\":";
+  json += gConfigPersisted ? "true" : "false";
+  json += ",\"temp_high_c\":";
+  json += String(gConfig.tempHighC, 2);
+  json += ",\"humidity_high_pct\":";
+  json += String(gConfig.humidityHighPct, 2);
+  json += ",\"sound_high_dbfs\":";
+  json += String(gConfig.soundHighDbfs, 2);
+  json += ",\"light_high_als\":";
+  json += String(gConfig.lightHighAls);
+  json += ",\"cpu_high_pct\":";
+  json += String(gConfig.cpuHighPct, 2);
+  json += ",\"heap_low_bytes\":";
+  json += String(gConfig.heapLowBytes);
+  json += ",\"speaker_alerts\":";
+  json += gConfig.speakerAlerts ? "true" : "false";
+  json += "}";
+  server.send(200, "application/json; charset=utf-8", json);
+}
+
+void handleFlush() {
+  const bool ok = flushPendingLog();
+  String json;
+  json.reserve(120);
+  json += "{\"flushed\":";
+  json += ok ? "true" : "false";
+  json += ",\"pending_bytes\":";
+  json += String(gPendingLog.length());
+  json += ",\"write_failures\":";
+  json += String(gStorageWriteFailures);
+  json += "}";
+  server.send(ok ? 200 : 500, "application/json; charset=utf-8", json);
+}
+
+void handleReboot() {
+  const bool ok = flushPendingLog();
+  if (!ok) {
+    String json;
+    json.reserve(120);
+    json += "{\"rebooting\":false,\"pending_bytes\":";
+    json += String(gPendingLog.length());
+    json += ",\"write_failures\":";
+    json += String(gStorageWriteFailures);
+    json += "}";
+    server.send(500, "application/json; charset=utf-8", json);
+    return;
+  }
+  server.send(202, "application/json; charset=utf-8", "{\"rebooting\":true,\"flushed\":true}");
+  gRebootRequested = true;
 }
 
 void handleLogDownload() {
@@ -1831,6 +2403,9 @@ void setupServer() {
   server.on("/api/history", HTTP_GET, handleHistory);
   server.on("/api/speaker_test", HTTP_POST, handleSpeakerTest);
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);
+  server.on("/api/config", HTTP_ANY, handleConfig);
+  server.on("/api/flush", HTTP_POST, handleFlush);
+  server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
   server.begin();
 }
@@ -1906,18 +2481,25 @@ void setup() {
 
   setupServer();
   updateSystemStatsIfDue();
+  updateAlerts();
   updateDisplayIfDue();
   reportStatusIfDue();
 }
 
 void loop() {
   server.handleClient();
+  if (gRebootRequested) {
+    flushPendingLog();
+    delay(250);
+    ESP.restart();
+  }
   updateSystemStatsIfDue();
   readDhtIfDue();
   readChipTempIfDue();
   readAp3216IfDue();
   readQmaIfDue();
   readMicIfDue();
+  updateAlerts();
   runSpeakerActionsIfDue();
   publishSampleIfDue();
   flushIfDue();

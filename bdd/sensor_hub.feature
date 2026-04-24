@@ -9,19 +9,27 @@ Feature: ESP32 Sensor Hub Dashboard
   Scenario: Live dashboard exposes sensor telemetry
     Given the board is running on the local Wi-Fi
     When the client requests /api/status and /api/history
-    Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU and board speaker verification fields should be present
+    Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, alerts, config and board speaker verification fields should be present
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
     And posting /api/speak_temperature should increase or otherwise change board playback evidence in status fields such as speak_count
 
-  Scenario: HTML dashboard, board speaker playback controls, self-test and CSV log are available
+  Scenario: HTML dashboard, board speaker playback controls, alert thresholds, self-test and CSV log are available
     Given the board HTTP service is online
     When the client requests / and /api/log.csv
-    Then the HTML should contain the dashboard shell, a board speaker playback button, a board speaker self-test button and a CSV log link
+    Then the HTML should contain the dashboard shell, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
     And the CSV log should contain persisted sensor samples
 
-  Scenario: Host USB camera can capture an observation frame
-    Given the host machine has a USB camera
-    When the verification flow captures a snapshot
-    Then a camera image artifact should be written successfully
+  Scenario: LittleFS config and sensor samples survive reboot
+    Given the board HTTP service is online
+    When the verification flow writes config, flushes logs, and reboots the board
+    Then /api/status should report the persisted config after reboot
+    And /api/history should still include recovered LittleFS samples
+
+  Scenario: Short unattended soak remains healthy
+    Given the board HTTP service is online
+    When the verification flow polls the board through a short soak window
+    Then persisted samples should increase
+    And storage failures and dropped samples should remain zero
+    And heap usage should remain within the accepted stability band

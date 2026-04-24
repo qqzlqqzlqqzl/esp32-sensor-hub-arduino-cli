@@ -10,9 +10,12 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - ES8388 microphone level capture
 - ES8388 board speaker playback and hardware verification
 - LittleFS CSV persistence
+- LittleFS-backed alert threshold configuration
+- API / dashboard alert state
 - LCD offline dashboard pages
 - HTTP dashboard with charts and CSV export
-- USB camera capture artifacts for lab verification
+- Reboot recovery and short soak CI checks
+- Optional USB camera capture artifacts for lab verification
 - BDD and CI verification scripts
 
 ## Build
@@ -34,6 +37,17 @@ Example:
 ```powershell
 & 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\verify_sensor_hub.ps1' -WifiSsid 'Ziroom402' -WifiPassword '4001001111'
 ```
+
+The default verification path skips host USB camera checks and focuses on the board sensor hub:
+
+- Arduino CLI build/upload
+- live API, HTML, CSV, LCD and speaker playback checks
+- LittleFS config persistence through `/api/config`
+- forced log flush through `/api/flush`
+- reboot recovery through `/api/reboot`
+- short soak sampling and heap stability
+
+Pass `-IncludeCamera` only when host USB camera artifacts are part of the current acceptance target.
 
 ## Issue Workflow
 
