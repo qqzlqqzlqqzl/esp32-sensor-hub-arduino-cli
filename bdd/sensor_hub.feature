@@ -11,7 +11,7 @@ Feature: ESP32 Sensor Hub Dashboard
     When the client requests /api/status, /api/health, /api/live and /api/history
     Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
     And /api/health should report compact OK health for storage, sensors, speaker, alerts, uptime, heap and persisted samples
-    And /api/live should report 500 ms live polling and 10000 ms sample and flush cadence
+    And /api/live should report 500 ms live polling, cached live payloads, and 10000 ms sample and flush cadence
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
@@ -20,8 +20,15 @@ Feature: ESP32 Sensor Hub Dashboard
   Scenario: HTML dashboard, health, fast live polling, board speaker playback controls, alert thresholds, self-test and CSV log are available
     Given the board HTTP service is online
     When the client requests / and /api/log.csv
-    Then the HTML should contain the dashboard shell, a health link, 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
+    Then the HTML should contain the dashboard shell, a health link, completion-based 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
     And the CSV log should contain persisted sensor samples
+
+  Scenario: 2Hz live polling remains stable
+    Given the board HTTP service is online
+    When the verification flow polls /api/live at 2Hz
+    Then every live response should preserve the advertised cadence
+    And live JSON build count should grow slower than the response count
+    And heap should remain within the accepted stability band
 
   Scenario: LittleFS config and sensor samples survive reboot
     Given the board HTTP service is online

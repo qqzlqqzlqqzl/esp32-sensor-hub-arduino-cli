@@ -50,6 +50,7 @@ constexpr unsigned long kSpeakerSelfTestDelayMs = 8000;
 constexpr unsigned long kSampleIntervalMs = 10000;
 constexpr unsigned long kFlushIntervalMs = 10000;
 constexpr unsigned long kDashboardLiveIntervalMs = 500;
+constexpr unsigned long kLivePayloadCacheTtlMs = 1000;
 constexpr unsigned long kDashboardSnapshotIntervalMs = 10000;
 constexpr unsigned long kSerialReportIntervalMs = 10000;
 constexpr size_t kHistoryCapacity = 120;
@@ -96,6 +97,9 @@ bool gSpeakerTestRequested = false;
 bool gSpeakTemperatureRequested = false;
 bool gRebootRequested = false;
 bool gConfigPersisted = false;
+String gLiveJsonCache;
+unsigned long gLiveJsonCacheMs = 0;
+uint32_t gLiveJsonBuildCount = 0;
 
 struct HubConfig {
   float tempHighC = 32.0f;
@@ -849,6 +853,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         await refreshLive();
       } catch (error) {
         statusEls.netState.textContent = 'dashboard fetch failed';
+      } finally {
+        setTimeout(liveLoop, LIVE_POLL_MS);
       }
     }
 
@@ -857,13 +863,13 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         await refreshSnapshot();
       } catch (error) {
         statusEls.storageHealth.textContent = 'snapshot fetch failed';
+      } finally {
+        setTimeout(snapshotLoop, SNAPSHOT_POLL_MS);
       }
     }
 
     snapshotLoop();
     liveLoop();
-    setInterval(liveLoop, LIVE_POLL_MS);
-    setInterval(snapshotLoop, SNAPSHOT_POLL_MS);
   </script>
 </body>
 </html>
@@ -2251,8 +2257,14 @@ String historyJson() {
 }
 
 String liveJson() {
+  const unsigned long nowMs = millis();
+  if (!gLiveJsonCache.isEmpty() && nowMs - gLiveJsonCacheMs < kLivePayloadCacheTtlMs) {
+    return gLiveJsonCache;
+  }
+
   String json;
-  json.reserve(1800);
+  json.reserve(1900);
+  gLiveJsonBuildCount++;
   json += "{\"network\":{\"mode\":\"";
   json += currentNetworkMode();
   json += "\",\"ip\":\"";
@@ -2271,10 +2283,15 @@ String liveJson() {
   json += String(gDroppedSamples);
   json += ",\"mount_ok\":";
   json += gLittleFsReady ? "true" : "false";
+  json += ",\"live_build_count\":";
+  json += String(gLiveJsonBuildCount);
+  json += ",\"live_cache_age_ms\":0";
   json += "},\"cadence\":{\"live_poll_ms\":";
   json += String(kDashboardLiveIntervalMs);
   json += ",\"snapshot_poll_ms\":";
   json += String(kDashboardSnapshotIntervalMs);
+  json += ",\"live_cache_ttl_ms\":";
+  json += String(kLivePayloadCacheTtlMs);
   json += ",\"sample_interval_ms\":";
   json += String(kSampleIntervalMs);
   json += ",\"flush_interval_ms\":";
@@ -2374,6 +2391,8 @@ String liveJson() {
   json += ",\"last_spoken_temp_c\":";
   json += String(gSpeaker.lastSpokenTempC);
   json += "}}";
+  gLiveJsonCache = json;
+  gLiveJsonCacheMs = nowMs;
   return json;
 }
 

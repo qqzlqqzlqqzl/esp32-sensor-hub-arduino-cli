@@ -490,8 +490,10 @@ function Test-LiveEndpoint {
         ($null -ne $liveJson.cadence) -and
         ([int]$liveJson.cadence.live_poll_ms -eq 500) -and
         ([int]$liveJson.cadence.snapshot_poll_ms -eq 10000) -and
+        ([int]$liveJson.cadence.live_cache_ttl_ms -eq 1000) -and
         ([int]$liveJson.cadence.sample_interval_ms -eq 10000) -and
         ([int]$liveJson.cadence.flush_interval_ms -eq 10000) -and
+        ([int]$liveJson.storage.live_build_count -ge 1) -and
         ([int]$liveJson.system.free_heap_bytes -gt 0) -and
         ([int]$liveJson.storage.persisted_samples -ge 1)
 
@@ -542,8 +544,79 @@ function Test-HtmlCadenceMarkers {
     return $HtmlText.Contains('/api/live') -and
         $HtmlText.Contains('const LIVE_POLL_MS = 500') -and
         $HtmlText.Contains('const SNAPSHOT_POLL_MS = 10000') -and
-        $HtmlText.Contains('setInterval(liveLoop, LIVE_POLL_MS)') -and
-        $HtmlText.Contains('setInterval(snapshotLoop, SNAPSHOT_POLL_MS)')
+        $HtmlText.Contains('setTimeout(liveLoop, LIVE_POLL_MS)') -and
+        $HtmlText.Contains('setTimeout(snapshotLoop, SNAPSHOT_POLL_MS)') -and
+        (-not $HtmlText.Contains('setInterval(liveLoop')) -and
+        (-not $HtmlText.Contains('setInterval(snapshotLoop'))
+}
+
+function Test-LiveCadenceSoak {
+    param(
+        [string]$Ip,
+        [int]$DurationSeconds = 20
+    )
+
+    $beforeText = Invoke-Curl ('http://' + $Ip + '/api/live') -TimeoutSeconds 5
+    $beforeJson = $beforeText | ConvertFrom-Json
+    $beforeHeap = [int](Get-PropertyValue -Object $beforeJson.system -Name 'free_heap_bytes' -Default 0)
+    $beforeBuildCount = [int](Get-PropertyValue -Object $beforeJson.storage -Name 'live_build_count' -Default 0)
+    $minHeap = $beforeHeap
+    $maxCpu = 0.0
+    $okResponses = 0
+    $failedResponses = 0
+    $deadline = (Get-Date).AddSeconds($DurationSeconds)
+
+    while ((Get-Date) -lt $deadline) {
+        $startedAt = Get-Date
+        try {
+            $liveText = Invoke-Curl ('http://' + $Ip + '/api/live') -TimeoutSeconds 4
+            $liveJson = $liveText | ConvertFrom-Json
+            $cadenceOk = ([int]$liveJson.cadence.live_poll_ms -eq 500) -and
+                ([int]$liveJson.cadence.snapshot_poll_ms -eq 10000) -and
+                ([int]$liveJson.cadence.live_cache_ttl_ms -eq 1000) -and
+                ([int]$liveJson.cadence.sample_interval_ms -eq 10000) -and
+                ([int]$liveJson.cadence.flush_interval_ms -eq 10000)
+            if ($cadenceOk) {
+                $okResponses++
+            } else {
+                $failedResponses++
+            }
+            $freeHeap = [int](Get-PropertyValue -Object $liveJson.system -Name 'free_heap_bytes' -Default 0)
+            if ($freeHeap -gt 0 -and ($minHeap -eq 0 -or $freeHeap -lt $minHeap)) {
+                $minHeap = $freeHeap
+            }
+            $cpu = [double](Get-PropertyValue -Object $liveJson.system -Name 'cpu_usage_pct' -Default 0)
+            if ($cpu -gt $maxCpu) {
+                $maxCpu = $cpu
+            }
+        }
+        catch {
+            $failedResponses++
+        }
+
+        $elapsedMs = [int]((Get-Date) - $startedAt).TotalMilliseconds
+        $sleepMs = 500 - $elapsedMs
+        if ($sleepMs -gt 0) {
+            Start-Sleep -Milliseconds $sleepMs
+        }
+    }
+
+    $afterText = Invoke-Curl ('http://' + $Ip + '/api/live') -TimeoutSeconds 5
+    $afterJson = $afterText | ConvertFrom-Json
+    $afterHeap = [int](Get-PropertyValue -Object $afterJson.system -Name 'free_heap_bytes' -Default 0)
+    $afterBuildCount = [int](Get-PropertyValue -Object $afterJson.storage -Name 'live_build_count' -Default 0)
+    $liveBuilds = $afterBuildCount - $beforeBuildCount
+    $heapDrop = $beforeHeap - $afterHeap
+    $ok = ($okResponses -ge ([math]::Floor($DurationSeconds * 1.5))) -and
+        ($failedResponses -eq 0) -and
+        ($afterHeap -gt 0) -and
+        ($heapDrop -lt 25000) -and
+        ($liveBuilds -le ([math]::Floor($okResponses * 0.8) + 2))
+
+    return [pscustomobject]@{
+        Passed = $ok
+        Details = ('duration_s={0} ok_responses={1} failed_responses={2} live_builds={3} heap_before={4} heap_after={5} min_heap={6} heap_drop={7} max_cpu_pct={8:n2}' -f $DurationSeconds, $okResponses, $failedResponses, $liveBuilds, $beforeHeap, $afterHeap, $minHeap, $heapDrop, $maxCpu)
+    }
 }
 
 function Test-ConfigPersistence {
@@ -890,6 +963,9 @@ try {
     $live = Test-LiveEndpoint -Ip $ip
     Add-Result 'API Live Cadence' $live.Passed $live.Details
 
+    $liveSoak = Test-LiveCadenceSoak -Ip $ip -DurationSeconds 20
+    Add-Result 'API Live 2Hz Soak' $liveSoak.Passed $liveSoak.Details
+
     $configPersistence = Test-ConfigPersistence -Ip $ip
     if ($configPersistence.StatusJson) {
         $statusText = $configPersistence.StatusText
@@ -980,7 +1056,8 @@ $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
-$reportLines += '- HTML dashboard uses /api/live for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
+$reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
+$reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
 $reportLines += '- LittleFS data and config survive a board reboot'
 $reportLines += '- Short soak verifies continued sampling, storage writes and heap stability'
