@@ -47,8 +47,10 @@ constexpr unsigned long kChipTempIntervalMs = 5000;
 constexpr unsigned long kSystemIntervalMs = 2000;
 constexpr unsigned long kDisplayIntervalMs = 2500;
 constexpr unsigned long kSpeakerSelfTestDelayMs = 8000;
-constexpr unsigned long kSampleIntervalMs = 5000;
-constexpr unsigned long kFlushIntervalMs = 15000;
+constexpr unsigned long kSampleIntervalMs = 10000;
+constexpr unsigned long kFlushIntervalMs = 10000;
+constexpr unsigned long kDashboardLiveIntervalMs = 500;
+constexpr unsigned long kDashboardSnapshotIntervalMs = 10000;
 constexpr unsigned long kSerialReportIntervalMs = 10000;
 constexpr size_t kHistoryCapacity = 120;
 constexpr char kLogPath[] = "/sensor_log.csv";
@@ -567,6 +569,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     };
     let latestStatus = null;
     let configInputsDirty = false;
+    const LIVE_POLL_MS = 500;
+    const SNAPSHOT_POLL_MS = 10000;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
     function fmtNum(v, digits = 1) { return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits); }
@@ -689,7 +693,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       }
       statusEls.speakerState.textContent = 'board speaker request queued';
       fetch('/api/speak_temperature', { method: 'POST', cache: 'no-store' })
-        .then(() => setTimeout(loop, 1200))
+        .then(() => setTimeout(refreshLive, 1200))
         .catch(() => {
           statusEls.speakerState.textContent = 'board speaker request failed';
         });
@@ -700,7 +704,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       try {
         statusEls.speakerState.textContent = 'self test running...';
         await fetch('/api/speaker_test', { method: 'POST', cache: 'no-store' });
-        setTimeout(loop, 1200);
+        setTimeout(refreshLive, 1200);
       } catch (error) {
         statusEls.speakerState.textContent = 'self test trigger failed';
       }
@@ -719,7 +723,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         const res = await fetch(`/api/config?${params.toString()}`, { method: 'POST', cache: 'no-store' });
         statusEls.configState.textContent = res.ok ? 'saved to LittleFS' : 'save failed';
         if (res.ok) configInputsDirty = false;
-        setTimeout(loop, 600);
+        setTimeout(refreshSnapshot, 600);
       } catch (error) {
         statusEls.configState.textContent = 'save failed';
       }
@@ -735,17 +739,13 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       configInputsDirty = true;
     }));
 
-    async function refresh() {
-      const [statusRes, historyRes] = await Promise.all([
-        fetch('/api/status', { cache: 'no-store' }),
-        fetch('/api/history', { cache: 'no-store' }),
-      ]);
-      const status = await statusRes.json();
-      const history = await historyRes.json();
+    function renderLive(status) {
       latestStatus = status;
 
       statusEls.netState.textContent = `${status.network.mode} ${status.network.ip}`;
-      statusEls.storageState.textContent = `LittleFS ${status.storage.used_bytes}/${status.storage.total_bytes} bytes`;
+      statusEls.storageState.textContent = status.storage.used_bytes === undefined
+        ? `LittleFS persisted ${status.storage.persisted_samples}`
+        : `LittleFS ${status.storage.used_bytes}/${status.storage.total_bytes} bytes`;
       statusEls.displayState.textContent = `LCD ${status.display.online ? 'online' : 'offline'} / page ${status.display.page_name}`;
       statusEls.tempC.textContent = status.dht11.online ? `${fmtNum(status.dht11.temp_c)} °C` : '--';
       statusEls.humidity.textContent = status.dht11.online ? `${fmtNum(status.dht11.humidity)} %` : '--';
@@ -808,6 +808,22 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         }
         statusEls.configState.textContent = `config persisted ${status.config.persisted ? 'yes' : 'defaults'}`;
       }
+    }
+
+    async function refreshLive() {
+      const liveRes = await fetch('/api/live', { cache: 'no-store' });
+      const live = await liveRes.json();
+      renderLive(live);
+    }
+
+    async function refreshSnapshot() {
+      const [statusRes, historyRes] = await Promise.all([
+        fetch('/api/status', { cache: 'no-store' }),
+        fetch('/api/history', { cache: 'no-store' }),
+      ]);
+      const status = await statusRes.json();
+      const history = await historyRes.json();
+      renderLive(status);
 
       const rows = history.rows || [];
       renderRows(rows.slice().reverse().slice(0, 8));
@@ -828,16 +844,26 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       ]);
     }
 
-    async function loop() {
+    async function liveLoop() {
       try {
-        await refresh();
+        await refreshLive();
       } catch (error) {
         statusEls.netState.textContent = 'dashboard fetch failed';
       }
     }
 
-    loop();
-    setInterval(loop, 3000);
+    async function snapshotLoop() {
+      try {
+        await refreshSnapshot();
+      } catch (error) {
+        statusEls.storageHealth.textContent = 'snapshot fetch failed';
+      }
+    }
+
+    snapshotLoop();
+    liveLoop();
+    setInterval(liveLoop, LIVE_POLL_MS);
+    setInterval(snapshotLoop, SNAPSHOT_POLL_MS);
   </script>
 </body>
 </html>
@@ -2224,6 +2250,133 @@ String historyJson() {
   return json;
 }
 
+String liveJson() {
+  String json;
+  json.reserve(1800);
+  json += "{\"network\":{\"mode\":\"";
+  json += currentNetworkMode();
+  json += "\",\"ip\":\"";
+  json += currentDashboardIp();
+  json += "\",\"rssi_dbm\":";
+  json += String(currentRssiDbm());
+  json += "},\"storage\":{\"persisted_samples\":";
+  json += String(gPersistedSamples);
+  json += ",\"last_sample_epoch\":";
+  json += String(gPersistedLastSampleEpoch);
+  json += ",\"pending_bytes\":";
+  json += String(gPendingLog.length());
+  json += ",\"write_failures\":";
+  json += String(gStorageWriteFailures);
+  json += ",\"dropped_samples\":";
+  json += String(gDroppedSamples);
+  json += ",\"mount_ok\":";
+  json += gLittleFsReady ? "true" : "false";
+  json += "},\"cadence\":{\"live_poll_ms\":";
+  json += String(kDashboardLiveIntervalMs);
+  json += ",\"snapshot_poll_ms\":";
+  json += String(kDashboardSnapshotIntervalMs);
+  json += ",\"sample_interval_ms\":";
+  json += String(kSampleIntervalMs);
+  json += ",\"flush_interval_ms\":";
+  json += String(kFlushIntervalMs);
+  json += "},\"alerts\":{\"active\":";
+  json += gAlerts.active ? "true" : "false";
+  json += ",\"count\":";
+  json += String(gAlerts.count);
+  json += ",\"summary\":\"";
+  json += gAlerts.summary;
+  json += "\"},\"dht11\":{\"online\":";
+  json += gDht.online ? "true" : "false";
+  json += ",\"temp_c\":";
+  json += String(gDht.tempC, 2);
+  json += ",\"humidity\":";
+  json += String(gDht.humidity, 2);
+  json += ",\"success_count\":";
+  json += String(gDht.success);
+  json += ",\"failure_count\":";
+  json += String(gDht.failure);
+  json += "},\"chip_temp\":{\"online\":";
+  json += gChipTemp.online ? "true" : "false";
+  json += ",\"temp_c\":";
+  json += String(gChipTemp.tempC, 2);
+  json += "},\"ap3216c\":{\"online\":";
+  json += gLight.online ? "true" : "false";
+  json += ",\"als\":";
+  json += String(gLight.als);
+  json += ",\"ir\":";
+  json += String(gLight.ir);
+  json += ",\"ps\":";
+  json += String(gLight.ps);
+  json += "},\"qma6100p\":{\"online\":";
+  json += gAccel.online ? "true" : "false";
+  json += ",\"ax\":";
+  json += String(gAccel.ax, 3);
+  json += ",\"ay\":";
+  json += String(gAccel.ay, 3);
+  json += ",\"az\":";
+  json += String(gAccel.az, 3);
+  json += ",\"ag\":";
+  json += String(gAccel.ag, 3);
+  json += ",\"pitch\":";
+  json += String(gAccel.pitch, 2);
+  json += ",\"roll\":";
+  json += String(gAccel.roll, 2);
+  json += "},\"mic\":{\"online\":";
+  json += gMic.online ? "true" : "false";
+  json += ",\"dbfs\":";
+  json += String(gMic.dbfs, 2);
+  json += ",\"rms\":";
+  json += String(gMic.rms, 5);
+  json += ",\"peak\":";
+  json += String(gMic.peak);
+  json += "},\"system\":{\"runtime_ready\":";
+  json += gSystem.runtimeReady ? "true" : "false";
+  json += ",\"cpu_usage_pct\":";
+  json += String(gSystem.cpuUsagePct, 2);
+  json += ",\"cpu_freq_mhz\":";
+  json += String(gSystem.cpuFreqMhz);
+  json += ",\"free_heap_bytes\":";
+  json += String(gSystem.freeHeapBytes);
+  json += ",\"min_free_heap_bytes\":";
+  json += String(gSystem.minFreeHeapBytes);
+  json += ",\"max_alloc_heap_bytes\":";
+  json += String(gSystem.maxAllocHeapBytes);
+  json += ",\"uptime_sec\":";
+  json += String(gSystem.uptimeSec);
+  json += ",\"reset_reason\":\"";
+  json += gSystem.resetReason;
+  json += "\"},\"display\":{\"online\":";
+  json += gDisplayReady ? "true" : "false";
+  json += ",\"page\":";
+  json += String(gSystem.displayPage);
+  json += ",\"page_name\":\"";
+  json += gSystem.displayPageName;
+  json += "\"},\"speaker\":{\"online\":";
+  json += gSpeaker.online ? "true" : "false";
+  json += ",\"verification_state\":\"";
+  json += speakerVerificationState();
+  json += "\",\"loopback_passed\":";
+  json += gSpeaker.loopbackPassed ? "true" : "false";
+  json += ",\"test_running\":";
+  json += gSpeaker.testRunning ? "true" : "false";
+  json += ",\"speak_running\":";
+  json += gSpeaker.speaking ? "true" : "false";
+  json += ",\"muted_dbfs\":";
+  json += String(gSpeaker.mutedDbfs, 2);
+  json += ",\"enabled_dbfs\":";
+  json += String(gSpeaker.enabledDbfs, 2);
+  json += ",\"delta_dbfs\":";
+  json += String(gSpeaker.deltaDbfs, 2);
+  json += ",\"speak_count\":";
+  json += String(gSpeaker.speakCount);
+  json += ",\"has_spoken_temp\":";
+  json += gSpeaker.hasSpokenTemp ? "true" : "false";
+  json += ",\"last_spoken_temp_c\":";
+  json += String(gSpeaker.lastSpokenTempC);
+  json += "}}";
+  return json;
+}
+
 String healthJson() {
   const bool storageOk = gLittleFsReady && gStorageWriteFailures == 0 && gDroppedSamples == 0;
   const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && gDisplayReady;
@@ -2283,6 +2436,10 @@ void handleHistory() {
 
 void handleHealth() {
   server.send(200, "application/json; charset=utf-8", healthJson());
+}
+
+void handleLive() {
+  server.send(200, "application/json; charset=utf-8", liveJson());
 }
 
 void handleSpeakerTest() {
@@ -2451,6 +2608,7 @@ void setupServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/health", HTTP_GET, handleHealth);
+  server.on("/api/live", HTTP_GET, handleLive);
   server.on("/api/history", HTTP_GET, handleHistory);
   server.on("/api/speaker_test", HTTP_POST, handleSpeakerTest);
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);

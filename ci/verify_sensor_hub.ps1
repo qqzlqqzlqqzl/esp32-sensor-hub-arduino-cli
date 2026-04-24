@@ -476,6 +476,76 @@ function Test-HealthEndpoint {
     }
 }
 
+function Test-LiveEndpoint {
+    param([string]$Ip)
+
+    $liveText = Invoke-Curl ('http://' + $Ip + '/api/live')
+    $liveJson = $liveText | ConvertFrom-Json
+    $ok = ($null -ne $liveJson.dht11) -and
+        ($null -ne $liveJson.ap3216c) -and
+        ($null -ne $liveJson.qma6100p) -and
+        ($null -ne $liveJson.mic) -and
+        ($null -ne $liveJson.system) -and
+        ($null -ne $liveJson.storage) -and
+        ($null -ne $liveJson.cadence) -and
+        ([int]$liveJson.cadence.live_poll_ms -eq 500) -and
+        ([int]$liveJson.cadence.snapshot_poll_ms -eq 10000) -and
+        ([int]$liveJson.cadence.sample_interval_ms -eq 10000) -and
+        ([int]$liveJson.cadence.flush_interval_ms -eq 10000) -and
+        ([int]$liveJson.system.free_heap_bytes -gt 0) -and
+        ([int]$liveJson.storage.persisted_samples -ge 1)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        LiveText = $liveText
+        LiveJson = $liveJson
+        Details = $liveText.Trim()
+    }
+}
+
+function Wait-UptimeAtLeast {
+    param(
+        [string]$Ip,
+        [int]$MinUptimeSeconds = 90,
+        [int]$TimeoutSeconds = 130
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastText = ''
+    $lastJson = $null
+    while ((Get-Date) -lt $deadline) {
+        $lastText = Invoke-Curl ('http://' + $Ip + '/api/status') -TimeoutSeconds 8
+        $lastJson = $lastText | ConvertFrom-Json
+        $uptime = [int](Get-PropertyValue -Object $lastJson.system -Name 'uptime_sec' -Default 0)
+        if ($uptime -ge $MinUptimeSeconds) {
+            return [pscustomobject]@{
+                Passed = $true
+                StatusText = $lastText
+                StatusJson = $lastJson
+                Details = ('uptime_sec={0}' -f $uptime)
+            }
+        }
+        Start-Sleep -Seconds 5
+    }
+
+    return [pscustomobject]@{
+        Passed = $false
+        StatusText = $lastText
+        StatusJson = $lastJson
+        Details = ('Uptime did not reach {0}s before timeout.' -f $MinUptimeSeconds)
+    }
+}
+
+function Test-HtmlCadenceMarkers {
+    param([string]$HtmlText)
+
+    return $HtmlText.Contains('/api/live') -and
+        $HtmlText.Contains('const LIVE_POLL_MS = 500') -and
+        $HtmlText.Contains('const SNAPSHOT_POLL_MS = 10000') -and
+        $HtmlText.Contains('setInterval(liveLoop, LIVE_POLL_MS)') -and
+        $HtmlText.Contains('setInterval(snapshotLoop, SNAPSHOT_POLL_MS)')
+}
+
 function Test-ConfigPersistence {
     param([string]$Ip)
 
@@ -538,8 +608,17 @@ function Test-RebootPersistence {
         }
     }
     Start-Sleep -Seconds 1
-    $beforeText = Invoke-Curl ('http://' + $Ip + '/api/status')
-    $beforeJson = $beforeText | ConvertFrom-Json
+    $readyBefore = Wait-UptimeAtLeast -Ip $Ip -MinUptimeSeconds 90 -TimeoutSeconds 140
+    if (-not $readyBefore.Passed) {
+        return [pscustomobject]@{
+            Passed = $false
+            StatusText = $readyBefore.StatusText
+            StatusJson = $readyBefore.StatusJson
+            Details = ('Board was not old enough for strict reboot evidence: ' + $readyBefore.Details)
+        }
+    }
+    $beforeText = $readyBefore.StatusText
+    $beforeJson = $readyBefore.StatusJson
     $beforePersisted = [int](Get-PropertyValue -Object $beforeJson.storage -Name 'persisted_samples' -Default 0)
     $beforeTempHigh = [double](Get-PropertyValue -Object $beforeJson.config -Name 'temp_high_c' -Default 0)
     $beforeUptime = [int](Get-PropertyValue -Object $beforeJson.system -Name 'uptime_sec' -Default 0)
@@ -808,6 +887,9 @@ try {
     $health = Test-HealthEndpoint -Ip $ip -StatusJson $statusJson
     Add-Result 'API Health' $health.Passed $health.Details
 
+    $live = Test-LiveEndpoint -Ip $ip
+    Add-Result 'API Live Cadence' $live.Passed $live.Details
+
     $configPersistence = Test-ConfigPersistence -Ip $ip
     if ($configPersistence.StatusJson) {
         $statusText = $configPersistence.StatusText
@@ -846,11 +928,13 @@ try {
         $htmlText.Contains('板载喇叭自检') -and
         $htmlText.Contains('保存阈值') -and
         $htmlText.Contains('/api/health') -and
+        $htmlText.Contains('/api/live') -and
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('/api/config') -and
         $htmlText.Contains('查看 CSV 日志') -and
-        $htmlText.Contains('CPU 使用率')
+        $htmlText.Contains('CPU 使用率') -and
+        (Test-HtmlCadenceMarkers -HtmlText $htmlText)
     Add-Result 'HTML Dashboard' $htmlOk ('HTML bytes=' + $htmlText.Length)
 
     $rebootPersistence = Test-RebootPersistence -Ip $ip -BeforeStatus $statusJson
@@ -896,6 +980,7 @@ $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- HTML dashboard uses /api/live for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
 $reportLines += '- LittleFS data and config survive a board reboot'
 $reportLines += '- Short soak verifies continued sampling, storage writes and heap stability'
