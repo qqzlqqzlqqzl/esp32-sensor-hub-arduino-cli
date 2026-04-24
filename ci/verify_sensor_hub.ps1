@@ -505,6 +505,43 @@ function Test-LiveEndpoint {
     }
 }
 
+function Test-BootTelemetry {
+    param([object]$StatusJson)
+
+    $boot = Get-PropertyValue -Object $StatusJson -Name 'boot' -Default $null
+    if ($null -eq $boot) {
+        return [pscustomobject]@{
+            Passed = $false
+            Details = 'Missing boot telemetry object.'
+        }
+    }
+
+    $setupMs = [int](Get-PropertyValue -Object $boot -Name 'setup_complete_ms' -Default 0)
+    $historyMs = [int](Get-PropertyValue -Object $boot -Name 'history_load_ms' -Default 0)
+    $rowsCounted = [int](Get-PropertyValue -Object $boot -Name 'history_rows_counted' -Default 0)
+    $rowsLoaded = [int](Get-PropertyValue -Object $boot -Name 'history_rows_loaded' -Default 0)
+    $firstUrlMs = [int](Get-PropertyValue -Object $boot -Name 'first_url_report_ms' -Default 0)
+    $serverMs = [int](Get-PropertyValue -Object $boot -Name 'server_start_ms' -Default -1)
+    $displayMs = [int](Get-PropertyValue -Object $boot -Name 'display_init_ms' -Default -1)
+    $sensorsMs = [int](Get-PropertyValue -Object $boot -Name 'sensors_init_ms' -Default -1)
+    $maxLoadedRows = [math]::Min(120, $rowsCounted)
+
+    $ok = ($setupMs -gt 0) -and
+        ($setupMs -lt 8000) -and
+        ($historyMs -lt 3000) -and
+        ($rowsLoaded -le $maxLoadedRows) -and
+        ($firstUrlMs -gt 0) -and
+        ($firstUrlMs -ge $setupMs) -and
+        ($serverMs -ge 0) -and
+        ($displayMs -ge 0) -and
+        ($sensorsMs -ge 0)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        Details = ('setup_ms={0} history_ms={1} rows_counted={2} rows_loaded={3} first_url_ms={4} server_ms={5} display_ms={6} sensors_ms={7}' -f $setupMs, $historyMs, $rowsCounted, $rowsLoaded, $firstUrlMs, $serverMs, $displayMs, $sensorsMs)
+    }
+}
+
 function Wait-UptimeAtLeast {
     param(
         [string]$Ip,
@@ -910,7 +947,7 @@ try {
     $uploadOutput = Invoke-ArduinoCompile -Mode 'upload' -Cli $CliPath -Sketch $SketchPath -BoardFqbn $Fqbn -SerialPort $Port -ExtraFlags $extraFlags
     Add-Result 'Upload' ($LASTEXITCODE -eq 0) (($uploadOutput -split [Environment]::NewLine | Select-Object -Last 8) -join [Environment]::NewLine)
 
-    Start-Sleep -Seconds 4
+    Start-Sleep -Seconds 1
     $serialLog = Read-SerialLog -SerialPort $Port -TimeoutSeconds 180
     $dashboardEndpoint = Resolve-DashboardEndpoint -SerialLog $serialLog
     if ($dashboardEndpoint.SelectedIp) {
@@ -956,6 +993,9 @@ try {
     Add-Result 'API Status' $statusOk $statusText
     Add-Result 'Speaker Verification' $speakerVerificationOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
     Add-Result 'Speaker Playback Fields' $speakerPlaybackFieldsOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
+
+    $bootTelemetry = Test-BootTelemetry -StatusJson $statusJson
+    Add-Result 'Boot Telemetry' $bootTelemetry.Passed $bootTelemetry.Details
 
     $health = Test-HealthEndpoint -Ip $ip -StatusJson $statusJson
     Add-Result 'API Health' $health.Passed $health.Details
@@ -1056,6 +1096,7 @@ $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
@@ -1072,7 +1113,7 @@ $reportLines += ''
 $reportLines += '## Serial Excerpt'
 $reportLines += '```text'
 if ($serialLog) {
-    $serialExcerpt = @(($serialLog -split [Environment]::NewLine) | Where-Object { $_ -match '^\[(NET|URL|LIVE)\]' } | Select-Object -Last 6)
+    $serialExcerpt = @(($serialLog -split [Environment]::NewLine) | Where-Object { $_ -match '^\[(NET|URL|LIVE|BOOT)\]' } | Select-Object -Last 8)
     if ($serialExcerpt.Count -eq 0) {
         $serialExcerpt = @(($serialLog -split [Environment]::NewLine) | Select-Object -First 3)
     }

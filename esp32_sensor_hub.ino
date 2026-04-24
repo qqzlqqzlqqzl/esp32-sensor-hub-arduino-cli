@@ -9,6 +9,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <string.h>
@@ -61,6 +62,7 @@ constexpr char kConfigTmpPath[] = "/hub_config.tmp";
 constexpr char kConfigBackupPath[] = "/hub_config.bak";
 constexpr size_t kMaxLogFileBytes = 512 * 1024;
 constexpr size_t kMaxPendingLogBytes = 24 * 1024;
+constexpr size_t kMaxLogLineLength = 420;
 constexpr size_t kRuntimeTrackCapacity = 32;
 
 constexpr char kStaSsid[] = WIFI_STA_SSID;
@@ -100,6 +102,21 @@ bool gConfigPersisted = false;
 String gLiveJsonCache;
 unsigned long gLiveJsonCacheMs = 0;
 uint32_t gLiveJsonBuildCount = 0;
+
+struct BootState {
+  uint32_t serialReadyMs = 0;
+  uint32_t littleFsMountMs = 0;
+  uint32_t historyLoadMs = 0;
+  uint32_t configLoadMs = 0;
+  uint32_t networkStartMs = 0;
+  uint32_t displayInitMs = 0;
+  uint32_t sensorsInitMs = 0;
+  uint32_t serverStartMs = 0;
+  uint32_t setupCompleteMs = 0;
+  uint32_t firstUrlReportMs = 0;
+  uint32_t historyRowsCounted = 0;
+  uint32_t historyRowsLoaded = 0;
+} gBoot;
 
 struct HubConfig {
   float tempHighC = 32.0f;
@@ -1316,6 +1333,7 @@ void lcdPrintLine(uint16_t y, lcd_font_t font, uint16_t color, const char *fmt, 
 }
 
 void initDisplay() {
+  const unsigned long startedAt = millis();
   xl9555_init();
   lcd_init();
   lcd_display_dir(1);
@@ -1323,6 +1341,7 @@ void initDisplay() {
   lcd_clear(BLACK);
   gSystem.displayPage = 3;
   gDisplayReady = true;
+  gBoot.displayInitMs = millis() - startedAt;
 }
 
 void initCpuTelemetry() {
@@ -1573,7 +1592,7 @@ bool flushPendingLog() {
   return gPendingLog.isEmpty() && gStorageWriteFailures == failuresBefore;
 }
 
-bool parseLogLine(const String &line, SampleRow *row) {
+bool parseLogLine(const char *line, SampleRow *row) {
   unsigned long seq = 0;
   unsigned long epoch = 0;
   int dhtOnline = 0;
@@ -1604,7 +1623,7 @@ bool parseLogLine(const String &line, SampleRow *row) {
   unsigned int displayPage = 0;
   unsigned int alertCount = 0;
 
-  int parsed = sscanf(line.c_str(),
+  int parsed = sscanf(line,
                       "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u,%u",
                       &seq,
                       &epoch,
@@ -1636,7 +1655,7 @@ bool parseLogLine(const String &line, SampleRow *row) {
                       &displayPage,
                       &alertCount);
   if (parsed != 29) {
-    parsed = sscanf(line.c_str(),
+    parsed = sscanf(line,
                     "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u",
                     &seq,
                     &epoch,
@@ -1668,7 +1687,7 @@ bool parseLogLine(const String &line, SampleRow *row) {
                     &displayPage);
   }
   if (parsed != 28 && parsed != 29) {
-    parsed = sscanf(line.c_str(),
+    parsed = sscanf(line,
                     "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d",
                     &seq,
                     &epoch,
@@ -1729,7 +1748,59 @@ bool parseLogLine(const String &line, SampleRow *row) {
   return true;
 }
 
-void loadLogFile(const char *path) {
+bool isCandidateLogLine(const char *line, size_t length) {
+  return length >= 10 && isdigit(static_cast<unsigned char>(line[0]));
+}
+
+uint32_t countLogRows(const char *path) {
+  if (!LittleFS.exists(path)) {
+    return 0;
+  }
+
+  File logFile = LittleFS.open(path, "r");
+  if (!logFile) {
+    return 0;
+  }
+
+  uint8_t buffer[256];
+  char firstChar = '\0';
+  size_t lineLength = 0;
+  uint32_t rows = 0;
+
+  while (logFile.available()) {
+    const size_t bytesRead = logFile.read(buffer, sizeof(buffer));
+    if (bytesRead == 0) {
+      break;
+    }
+
+    for (size_t i = 0; i < bytesRead; i++) {
+      const char ch = static_cast<char>(buffer[i]);
+      if (ch == '\n') {
+        if (lineLength >= 10 && isdigit(static_cast<unsigned char>(firstChar))) {
+          rows++;
+        }
+        firstChar = '\0';
+        lineLength = 0;
+        continue;
+      }
+      if (ch == '\r') {
+        continue;
+      }
+      if (lineLength == 0) {
+        firstChar = ch;
+      }
+      lineLength++;
+    }
+  }
+
+  if (lineLength >= 10 && isdigit(static_cast<unsigned char>(firstChar))) {
+    rows++;
+  }
+  logFile.close();
+  return rows;
+}
+
+void loadLogFileTail(const char *path, uint32_t skipRows, uint32_t *seenRows) {
   if (!LittleFS.exists(path)) {
     return;
   }
@@ -1739,21 +1810,63 @@ void loadLogFile(const char *path) {
     return;
   }
 
-  while (logFile.available()) {
-    const String line = logFile.readStringUntil('\n');
-    if (line.length() < 10) {
-      continue;
+  uint8_t buffer[256];
+  char line[kMaxLogLineLength];
+  size_t lineLength = 0;
+  bool oversized = false;
+
+  auto consumeLine = [&]() {
+    if (lineLength == 0) {
+      oversized = false;
+      return;
     }
-    SampleRow row;
-    if (parseLogLine(line, &row)) {
-      pushHistory(row);
-      gPersistedSamples++;
-      gPersistedLastSampleEpoch = row.epoch;
-      if (row.seq > gSampleSeq) {
-        gSampleSeq = row.seq;
+
+    const bool candidate = !oversized && isCandidateLogLine(line, lineLength);
+    if (candidate) {
+      const uint32_t index = *seenRows;
+      (*seenRows)++;
+      if (index >= skipRows) {
+        line[lineLength] = '\0';
+        SampleRow row;
+        if (parseLogLine(line, &row)) {
+          pushHistory(row);
+          gBoot.historyRowsLoaded++;
+          gPersistedLastSampleEpoch = row.epoch;
+          if (row.seq > gSampleSeq) {
+            gSampleSeq = row.seq;
+          }
+        }
+      }
+    }
+
+    lineLength = 0;
+    oversized = false;
+  };
+
+  while (logFile.available()) {
+    const size_t bytesRead = logFile.read(buffer, sizeof(buffer));
+    if (bytesRead == 0) {
+      break;
+    }
+
+    for (size_t i = 0; i < bytesRead; i++) {
+      const char ch = static_cast<char>(buffer[i]);
+      if (ch == '\n') {
+        consumeLine();
+        continue;
+      }
+      if (ch == '\r') {
+        continue;
+      }
+      if (lineLength + 1 < sizeof(line)) {
+        line[lineLength++] = ch;
+      } else {
+        oversized = true;
       }
     }
   }
+
+  consumeLine();
   logFile.close();
 }
 
@@ -1767,16 +1880,35 @@ void loadHistoryFromLittleFs() {
   gPersistedSamples = 0;
   gPersistedLastSampleEpoch = 0;
   gSampleSeq = 0;
-  loadLogFile(kRotatedLogPath);
-  loadLogFile(kLogPath);
+
+  const uint32_t rotatedRows = countLogRows(kRotatedLogPath);
+  const uint32_t currentRows = countLogRows(kLogPath);
+  const uint32_t totalRows = rotatedRows + currentRows;
+  const uint32_t skipRows = totalRows > kHistoryCapacity ? totalRows - kHistoryCapacity : 0;
+  uint32_t seenRows = 0;
+
+  gPersistedSamples = totalRows;
+  gBoot.historyRowsCounted = totalRows;
+  gBoot.historyRowsLoaded = 0;
+  loadLogFileTail(kRotatedLogPath, skipRows, &seenRows);
+  loadLogFileTail(kLogPath, skipRows, &seenRows);
+  if (gSampleSeq == 0 && totalRows > 0) {
+    gSampleSeq = totalRows;
+  }
 }
 
 void initLittleFs() {
+  const unsigned long startedAt = millis();
   gLittleFsReady = LittleFS.begin(false);
   gLittleFsMountError = !gLittleFsReady;
+  gBoot.littleFsMountMs = millis() - startedAt;
   if (gLittleFsReady) {
+    const unsigned long historyStartedAt = millis();
     loadHistoryFromLittleFs();
+    gBoot.historyLoadMs = millis() - historyStartedAt;
+    const unsigned long configStartedAt = millis();
     loadConfigFromLittleFs();
+    gBoot.configLoadMs = millis() - configStartedAt;
   }
 }
 
@@ -1788,6 +1920,7 @@ void initChipTemperature() {
 }
 
 void initNetwork() {
+  const unsigned long startedAt = millis();
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
   WiFi.softAP(kApSsid);
@@ -1795,13 +1928,16 @@ void initNetwork() {
     WiFi.begin(kStaSsid, kStaPass);
   }
   configTime(8 * 3600, 0, "ntp.ntsc.ac.cn", "ntp1.aliyun.com", "time.windows.com");
+  gBoot.networkStartMs = millis() - startedAt;
 }
 
 void readDhtIfDue() {
   static unsigned long lastRead = 0;
-  if (millis() < kDhtStartupDelayMs || millis() - lastRead < kDhtIntervalMs) {
+  static bool firstRead = true;
+  if (millis() < kDhtStartupDelayMs || (!firstRead && millis() - lastRead < kDhtIntervalMs)) {
     return;
   }
+  firstRead = false;
   lastRead = millis();
 
   uint8_t temp = 0;
@@ -1821,9 +1957,11 @@ void readDhtIfDue() {
 
 void readChipTempIfDue() {
   static unsigned long lastRead = 0;
-  if (!gChipTempReady || millis() - lastRead < kChipTempIntervalMs) {
+  static bool firstRead = true;
+  if (!gChipTempReady || (!firstRead && millis() - lastRead < kChipTempIntervalMs)) {
     return;
   }
+  firstRead = false;
   lastRead = millis();
 
   float temp = 0.0f;
@@ -1838,27 +1976,33 @@ void readChipTempIfDue() {
 
 void readAp3216IfDue() {
   static unsigned long lastRead = 0;
-  if (!gAp3216Ready || millis() - lastRead < kLightIntervalMs) {
+  static bool firstRead = true;
+  if (!gAp3216Ready || (!firstRead && millis() - lastRead < kLightIntervalMs)) {
     return;
   }
+  firstRead = false;
   lastRead = millis();
   ap3216c::read(&gLight);
 }
 
 void readQmaIfDue() {
   static unsigned long lastRead = 0;
-  if (!gQmaReady || millis() - lastRead < kAccelIntervalMs) {
+  static bool firstRead = true;
+  if (!gQmaReady || (!firstRead && millis() - lastRead < kAccelIntervalMs)) {
     return;
   }
+  firstRead = false;
   lastRead = millis();
   qma6100p::read(&gAccel);
 }
 
 void readMicIfDue() {
   static unsigned long lastRead = 0;
-  if (!gMicReady || millis() - lastRead < kMicIntervalMs) {
+  static bool firstRead = true;
+  if (!gMicReady || (!firstRead && millis() - lastRead < kMicIntervalMs)) {
     return;
   }
+  firstRead = false;
   lastRead = millis();
   if (!es8388codec::readMicLevel(&gMic)) {
     gMic.online = false;
@@ -1981,9 +2125,37 @@ void flushIfDue() {
   flushPendingLog();
 }
 
+void appendBootJson(String &json) {
+  json += "\"boot\":{\"serial_ready_ms\":";
+  json += String(gBoot.serialReadyMs);
+  json += ",\"littlefs_mount_ms\":";
+  json += String(gBoot.littleFsMountMs);
+  json += ",\"history_load_ms\":";
+  json += String(gBoot.historyLoadMs);
+  json += ",\"history_rows_counted\":";
+  json += String(gBoot.historyRowsCounted);
+  json += ",\"history_rows_loaded\":";
+  json += String(gBoot.historyRowsLoaded);
+  json += ",\"config_load_ms\":";
+  json += String(gBoot.configLoadMs);
+  json += ",\"network_start_ms\":";
+  json += String(gBoot.networkStartMs);
+  json += ",\"display_init_ms\":";
+  json += String(gBoot.displayInitMs);
+  json += ",\"sensors_init_ms\":";
+  json += String(gBoot.sensorsInitMs);
+  json += ",\"server_start_ms\":";
+  json += String(gBoot.serverStartMs);
+  json += ",\"setup_complete_ms\":";
+  json += String(gBoot.setupCompleteMs);
+  json += ",\"first_url_report_ms\":";
+  json += String(gBoot.firstUrlReportMs);
+  json += "}";
+}
+
 String statusJson() {
   String json;
-  json.reserve(2200);
+  json.reserve(2600);
   json += "{";
   json += "\"network\":{\"mode\":\"";
   json += currentNetworkMode();
@@ -2178,6 +2350,8 @@ String statusJson() {
   json += ",\"last_test_ms\":";
   json += String(gSpeaker.lastTestMs);
   json += "}";
+  json += ",";
+  appendBootJson(json);
   json += "}";
   return json;
 }
@@ -2390,7 +2564,9 @@ String liveJson() {
   json += gSpeaker.hasSpokenTemp ? "true" : "false";
   json += ",\"last_spoken_temp_c\":";
   json += String(gSpeaker.lastSpokenTempC);
-  json += "}}";
+  json += "},";
+  appendBootJson(json);
+  json += "}";
   gLiveJsonCache = json;
   gLiveJsonCacheMs = nowMs;
   return json;
@@ -2437,6 +2613,10 @@ String healthJson() {
   json += String(gStorageWriteFailures);
   json += ",\"dropped_samples\":";
   json += String(gDroppedSamples);
+  json += ",\"setup_complete_ms\":";
+  json += String(gBoot.setupCompleteMs);
+  json += ",\"history_load_ms\":";
+  json += String(gBoot.historyLoadMs);
   json += "}";
   return json;
 }
@@ -2624,6 +2804,7 @@ void handleLogDownload() {
 }
 
 void setupServer() {
+  const unsigned long startedAt = millis();
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/health", HTTP_GET, handleHealth);
@@ -2636,14 +2817,13 @@ void setupServer() {
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
   server.begin();
+  gBoot.serverStartMs = millis() - startedAt;
 }
 
-void reportStatusIfDue() {
-  static unsigned long lastReport = 0;
-  if (millis() - lastReport < kSerialReportIntervalMs) {
-    return;
+void printStatusReport() {
+  if (gBoot.firstUrlReportMs == 0) {
+    gBoot.firstUrlReportMs = millis();
   }
-  lastReport = millis();
   Serial.printf("[NET] mode=%s ip=%s ap=%s\n",
                 currentNetworkMode().c_str(),
                 currentDashboardIp().c_str(),
@@ -2680,6 +2860,28 @@ void reportStatusIfDue() {
                 static_cast<unsigned long>(gDroppedSamples),
                 gDisplayReady ? "on" : "off",
                 static_cast<unsigned int>(gSystem.displayPage + 1));
+  Serial.printf("[BOOT] serial=%lu littlefs=%lu history=%lu rows=%lu loaded=%lu config=%lu network=%lu display=%lu sensors=%lu server=%lu setup=%lu first_url=%lu\n",
+                static_cast<unsigned long>(gBoot.serialReadyMs),
+                static_cast<unsigned long>(gBoot.littleFsMountMs),
+                static_cast<unsigned long>(gBoot.historyLoadMs),
+                static_cast<unsigned long>(gBoot.historyRowsCounted),
+                static_cast<unsigned long>(gBoot.historyRowsLoaded),
+                static_cast<unsigned long>(gBoot.configLoadMs),
+                static_cast<unsigned long>(gBoot.networkStartMs),
+                static_cast<unsigned long>(gBoot.displayInitMs),
+                static_cast<unsigned long>(gBoot.sensorsInitMs),
+                static_cast<unsigned long>(gBoot.serverStartMs),
+                static_cast<unsigned long>(gBoot.setupCompleteMs),
+                static_cast<unsigned long>(gBoot.firstUrlReportMs));
+}
+
+void reportStatusIfDue() {
+  static unsigned long lastReport = 0;
+  if (millis() - lastReport < kSerialReportIntervalMs) {
+    return;
+  }
+  lastReport = millis();
+  printStatusReport();
 }
 
 }  // namespace
@@ -2689,7 +2891,8 @@ void setup() {
   digitalWrite(kStatusLedPin, LOW);
 
   Serial.begin(115200);
-  delay(1200);
+  delay(100);
+  gBoot.serialReadyMs = millis();
   Serial.println();
   Serial.println("ESP32-S3 Sensor Hub boot");
   Serial.println("Reference sources: DHT11 + AP3216C + QMA6100P + ES8388 from ALIENTEK examples");
@@ -2702,16 +2905,23 @@ void setup() {
   initCpuTelemetry();
   initDisplay();
 
+  const unsigned long sensorsStartedAt = millis();
   gAp3216Ready = ap3216c::begin();
   gQmaReady = qma6100p::begin();
   gMicReady = es8388codec::beginMic();
   gSpeaker.online = gMicReady && es8388codec::isReady();
+  gBoot.sensorsInitMs = millis() - sensorsStartedAt;
 
   setupServer();
   updateSystemStatsIfDue();
+  readChipTempIfDue();
+  readAp3216IfDue();
+  readQmaIfDue();
+  readMicIfDue();
   updateAlerts();
   updateDisplayIfDue();
-  reportStatusIfDue();
+  gBoot.setupCompleteMs = millis();
+  printStatusReport();
 }
 
 void loop() {

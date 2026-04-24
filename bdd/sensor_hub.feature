@@ -12,10 +12,18 @@ Feature: ESP32 Sensor Hub Dashboard
     Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
     And /api/health should report compact OK health for storage, sensors, speaker, alerts, uptime, heap and persisted samples
     And /api/live should report 500 ms live polling, cached live payloads, and 10000 ms sample and flush cadence
+    And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
     And posting /api/speak_temperature should increase or otherwise change board playback evidence in status fields such as speak_count
+
+  Scenario: Boot-to-dashboard readiness remains fast
+    Given the board has persisted LittleFS CSV history
+    When the firmware boots
+    Then the serial console should report the dashboard URL immediately after setup
+    And setup_complete_ms should stay below the accepted boot readiness budget
+    And only the latest dashboard history rows should be parsed during boot
 
   Scenario: HTML dashboard, health, fast live polling, board speaker playback controls, alert thresholds, self-test and CSV log are available
     Given the board HTTP service is online
