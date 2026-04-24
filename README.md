@@ -11,6 +11,7 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - ES8388 board speaker playback and hardware verification
 - LittleFS CSV persistence
 - LittleFS-backed alert threshold configuration
+- Compact `/api/health` endpoint for unattended polling
 - API / dashboard alert state
 - LCD offline dashboard pages
 - HTTP dashboard with charts and CSV export
@@ -42,6 +43,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 
 - Arduino CLI build/upload
 - live API, HTML, CSV, LCD and speaker playback checks
+- compact health endpoint checks through `/api/health`
 - LittleFS config persistence through `/api/config`
 - forced log flush through `/api/flush`
 - reboot recovery through `/api/reboot`

@@ -8,17 +8,18 @@ Feature: ESP32 Sensor Hub Dashboard
 
   Scenario: Live dashboard exposes sensor telemetry
     Given the board is running on the local Wi-Fi
-    When the client requests /api/status and /api/history
-    Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, alerts, config and board speaker verification fields should be present
+    When the client requests /api/status, /api/health and /api/history
+    Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, health, alerts, config and board speaker verification fields should be present
+    And /api/health should report compact OK health for storage, sensors, speaker, alerts, uptime, heap and persisted samples
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
     And posting /api/speak_temperature should increase or otherwise change board playback evidence in status fields such as speak_count
 
-  Scenario: HTML dashboard, board speaker playback controls, alert thresholds, self-test and CSV log are available
+  Scenario: HTML dashboard, health, board speaker playback controls, alert thresholds, self-test and CSV log are available
     Given the board HTTP service is online
     When the client requests / and /api/log.csv
-    Then the HTML should contain the dashboard shell, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
+    Then the HTML should contain the dashboard shell, a health link, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
     And the CSV log should contain persisted sensor samples
 
   Scenario: LittleFS config and sensor samples survive reboot

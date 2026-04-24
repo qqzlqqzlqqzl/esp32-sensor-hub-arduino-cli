@@ -398,6 +398,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       <button id="speakTempBtn" class="btn" type="button">播报当前温度</button>
       <button id="speakerSelfTestBtn" class="btn" type="button">板载喇叭自检</button>
       <button id="saveConfigBtn" class="btn" type="button">保存阈值</button>
+      <a class="btn" href="/api/health" target="_blank" rel="noreferrer">健康检查</a>
       <a class="btn" href="/api/log.csv" target="_blank" rel="noreferrer">查看 CSV 日志</a>
     </div>
     <div id="alertLine" class="alert-line"></div>
@@ -2223,6 +2224,51 @@ String historyJson() {
   return json;
 }
 
+String healthJson() {
+  const bool storageOk = gLittleFsReady && gStorageWriteFailures == 0 && gDroppedSamples == 0;
+  const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && gDisplayReady;
+  const bool speakerOk = gSpeaker.online && gSpeaker.loopbackPassed;
+  const bool ok = storageOk && sensorsOk && speakerOk && !gAlerts.active;
+  const char *state = ok ? "OK" : (gAlerts.active ? "ALERT" : "DEGRADED");
+
+  String json;
+  json.reserve(760);
+  json += "{\"ok\":";
+  json += ok ? "true" : "false";
+  json += ",\"status\":\"";
+  json += state;
+  json += "\",\"ip\":\"";
+  json += currentDashboardIp();
+  json += "\",\"uptime_sec\":";
+  json += String(gSystem.uptimeSec);
+  json += ",\"free_heap_bytes\":";
+  json += String(gSystem.freeHeapBytes);
+  json += ",\"min_free_heap_bytes\":";
+  json += String(gSystem.minFreeHeapBytes);
+  json += ",\"persisted_samples\":";
+  json += String(gPersistedSamples);
+  json += ",\"last_sample_epoch\":";
+  json += String(gPersistedLastSampleEpoch);
+  json += ",\"storage_ok\":";
+  json += storageOk ? "true" : "false";
+  json += ",\"sensors_ok\":";
+  json += sensorsOk ? "true" : "false";
+  json += ",\"speaker_ok\":";
+  json += speakerOk ? "true" : "false";
+  json += ",\"alerts_active\":";
+  json += gAlerts.active ? "true" : "false";
+  json += ",\"alert_count\":";
+  json += String(gAlerts.count);
+  json += ",\"alert_summary\":\"";
+  json += gAlerts.summary;
+  json += "\",\"write_failures\":";
+  json += String(gStorageWriteFailures);
+  json += ",\"dropped_samples\":";
+  json += String(gDroppedSamples);
+  json += "}";
+  return json;
+}
+
 void handleRoot() {
   server.send(200, "text/html; charset=utf-8", FPSTR(kDashboardHtml));
 }
@@ -2233,6 +2279,10 @@ void handleStatus() {
 
 void handleHistory() {
   server.send(200, "application/json; charset=utf-8", historyJson());
+}
+
+void handleHealth() {
+  server.send(200, "application/json; charset=utf-8", healthJson());
 }
 
 void handleSpeakerTest() {
@@ -2400,6 +2450,7 @@ void handleLogDownload() {
 void setupServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/api/health", HTTP_GET, handleHealth);
   server.on("/api/history", HTTP_GET, handleHistory);
   server.on("/api/speaker_test", HTTP_POST, handleSpeakerTest);
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);

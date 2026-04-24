@@ -451,6 +451,31 @@ function Test-CsvLog {
     }
 }
 
+function Test-HealthEndpoint {
+    param(
+        [string]$Ip,
+        [object]$StatusJson
+    )
+
+    $healthText = Invoke-Curl ('http://' + $Ip + '/api/health')
+    $healthJson = $healthText | ConvertFrom-Json
+    $ok = ($healthJson.ok -eq $true) -and
+        ($healthJson.status -eq 'OK') -and
+        ($healthJson.storage_ok -eq $true) -and
+        ($healthJson.sensors_ok -eq $true) -and
+        ($healthJson.speaker_ok -eq $true) -and
+        ($healthJson.alerts_active -eq $false) -and
+        ([int]$healthJson.persisted_samples -ge 1) -and
+        ([int]$healthJson.free_heap_bytes -gt 0)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        HealthText = $healthText
+        HealthJson = $healthJson
+        Details = $healthText.Trim()
+    }
+}
+
 function Test-ConfigPersistence {
     param([string]$Ip)
 
@@ -780,6 +805,9 @@ try {
     Add-Result 'Speaker Verification' $speakerVerificationOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
     Add-Result 'Speaker Playback Fields' $speakerPlaybackFieldsOk (Get-SpeakerVerificationSummary -Speaker $statusJson.speaker)
 
+    $health = Test-HealthEndpoint -Ip $ip -StatusJson $statusJson
+    Add-Result 'API Health' $health.Passed $health.Details
+
     $configPersistence = Test-ConfigPersistence -Ip $ip
     if ($configPersistence.StatusJson) {
         $statusText = $configPersistence.StatusText
@@ -817,6 +845,7 @@ try {
         $htmlText.Contains('播报当前温度') -and
         $htmlText.Contains('板载喇叭自检') -and
         $htmlText.Contains('保存阈值') -and
+        $htmlText.Contains('/api/health') -and
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('/api/config') -and
@@ -866,7 +895,7 @@ $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
-$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
 $reportLines += '- LittleFS data and config survive a board reboot'
 $reportLines += '- Short soak verifies continued sampling, storage writes and heap stability'
