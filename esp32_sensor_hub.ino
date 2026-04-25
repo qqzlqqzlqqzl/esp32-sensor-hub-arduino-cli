@@ -667,9 +667,15 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     };
     let latestStatus = null;
     let configInputsDirty = false;
+    let cameraFrameTimer = 0;
+    let cameraFrameInFlight = false;
+    let cameraFrameStartedAt = 0;
+    let cameraFrameCount = 0;
+    let cameraFrameLoadMs = null;
     const LIVE_POLL_MS = 500;
     const SNAPSHOT_POLL_MS = 10000;
-    const CAMERA_REFRESH_MS = 2000;
+    const CAMERA_REFRESH_MS = 500;
+    const CAMERA_RETRY_MS = 1200;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
     function fmtNum(v, digits = 1) { return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits); }
@@ -952,7 +958,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       if (status.camera) {
         statusEls.cameraState.textContent = status.camera.online ? `${status.camera.name} ${status.camera.frame_size_name}` : 'offline';
         statusEls.cameraState.className = `value sm ${status.camera.online ? 'ok' : 'bad'}`;
-        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count}`;
+        const imageMetric = cameraFrameLoadMs === null ? '' : ` / img ${cameraFrameLoadMs}ms / ui ${cameraFrameCount}`;
+        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / sensor ${status.camera.last_capture_duration_ms}ms${imageMetric}`;
         statusEls.camFrameSize.value = status.camera.frame_size_name;
         statusEls.camQuality.value = status.camera.quality;
         statusEls.camBrightness.value = status.camera.brightness;
@@ -1029,16 +1036,38 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       }
     }
 
-    function cameraLoop() {
-      if (latestStatus && latestStatus.camera && latestStatus.camera.online) {
-        statusEls.cameraFrame.src = `/api/camera.jpg?t=${Date.now()}`;
-      }
-      setTimeout(cameraLoop, CAMERA_REFRESH_MS);
+    function scheduleCameraLoop(delayMs) {
+      if (cameraFrameTimer) clearTimeout(cameraFrameTimer);
+      cameraFrameTimer = setTimeout(cameraLoop, delayMs);
     }
+
+    function cameraLoop() {
+      if (cameraFrameInFlight) {
+        return;
+      }
+      if (latestStatus && latestStatus.camera && latestStatus.camera.online) {
+        cameraFrameInFlight = true;
+        cameraFrameStartedAt = performance.now();
+        statusEls.cameraFrame.src = `/api/camera.jpg?t=${Date.now()}`;
+      } else {
+        scheduleCameraLoop(CAMERA_RETRY_MS);
+      }
+    }
+
+    statusEls.cameraFrame.addEventListener('load', () => {
+      cameraFrameInFlight = false;
+      cameraFrameCount++;
+      cameraFrameLoadMs = Math.round(performance.now() - cameraFrameStartedAt);
+      scheduleCameraLoop(CAMERA_REFRESH_MS);
+    });
+    statusEls.cameraFrame.addEventListener('error', () => {
+      cameraFrameInFlight = false;
+      scheduleCameraLoop(CAMERA_RETRY_MS);
+    });
 
     snapshotLoop();
     liveLoop();
-    cameraLoop();
+    scheduleCameraLoop(100);
   </script>
 </body>
 </html>
@@ -2414,6 +2443,8 @@ void appendCameraJson(String &json) {
   json += String(cam.captureFailures);
   json += ",\"last_capture_ms\":";
   json += String(cam.lastCaptureMs);
+  json += ",\"last_capture_duration_ms\":";
+  json += String(cam.lastCaptureDurationMs);
   json += ",\"last_frame_bytes\":";
   json += String(cam.lastFrameBytes);
   json += ",\"last_width\":";

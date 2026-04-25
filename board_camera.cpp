@@ -144,7 +144,9 @@ camera_fb_t *capture() {
     return nullptr;
   }
 
+  const uint32_t startedAt = millis();
   camera_fb_t *frame = esp_camera_fb_get();
+  gCamera.lastCaptureDurationMs = millis() - startedAt;
   if (!frame) {
     gCamera.captureFailures++;
     return nullptr;

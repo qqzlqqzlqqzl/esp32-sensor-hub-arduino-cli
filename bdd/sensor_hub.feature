@@ -38,6 +38,7 @@ Feature: ESP32 Sensor Hub Dashboard
     Then the register API should return a masked value
     And the camera control API should report the applied setting in /api/camera
     And unsafe register writes, invalid devices, wrapped 8-bit register addresses, and invalid camera frame sizes should be rejected
+    And the camera dashboard should use a 500 ms completion-driven image refresh loop with bounded JPEG latency
 
   Scenario: 2Hz live polling remains stable
     Given the board HTTP service is online
