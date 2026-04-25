@@ -48,7 +48,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 - Arduino CLI build/upload
 - live API, HTML, CSV, LCD and speaker playback checks
 - MC5640 camera status, JPEG capture, camera control and safe register console checks
-- MC5640 dashboard refresh cadence and JPEG latency checks
+- MC5640 MJPEG stream cadence and JPEG latency checks
 - compact health endpoint checks through `/api/health`
 - cached lightweight live endpoint checks through `/api/live`
 - boot readiness telemetry checks through `/api/status`

@@ -580,6 +580,22 @@ function Test-CameraEndpoint {
     $latencyStats = $captureLatencyMs | Measure-Object -Average -Maximum
     $avgCaptureMs = [math]::Round($latencyStats.Average)
     $maxCaptureMs = [int]$latencyStats.Maximum
+    $streamPath = Join-Path $env:TEMP ('esp32_camera_stream_' + [guid]::NewGuid().ToString('N') + '.mjpg')
+    try {
+        $streamWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        & curl.exe --noproxy '*' --connect-timeout 8 --max-time 3 -sS -o $streamPath ('http://' + $Ip + ':81/stream.mjpg') 2>$null | Out-Null
+        $streamWatch.Stop()
+        $streamBytes = if (Test-Path $streamPath) { (Get-Item $streamPath).Length } else { 0 }
+        $streamText = if (Test-Path $streamPath) { [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($streamPath)) } else { '' }
+        $streamFrames = [regex]::Matches($streamText, '--frame').Count
+        $streamSeconds = [math]::Max(0.1, $streamWatch.Elapsed.TotalSeconds)
+        $streamFps = [math]::Round(($streamFrames / $streamSeconds), 1)
+    }
+    finally {
+        if (Test-Path $streamPath) {
+            Remove-Item -LiteralPath $streamPath -Force
+        }
+    }
 
     $regText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x00&mask=0xff') -TimeoutSeconds 6
     $regJson = $regText | ConvertFrom-Json
@@ -607,6 +623,9 @@ function Test-CameraEndpoint {
         ($jpgLength -gt 1024) -and
         ($avgCaptureMs -le 1200) -and
         ($maxCaptureMs -le 2500) -and
+        ($streamBytes -gt 4096) -and
+        ($streamFrames -ge 40) -and
+        ($streamFps -ge 18.0) -and
         ($afterCaptureCount -gt $beforeCaptureCount) -and
         ($afterFailures -eq $beforeFailures) -and
         ($regJson.ok -eq $true) -and
@@ -625,7 +644,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} capture_before={6} capture_after={7} failures_before={8} failures_after={9} reg_value={10} quality={11} unsafe_write={12} bad_frame={13} bad_value={14} bad_device={15} wrapped_reg={16}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} reg_value={13} quality={14} unsafe_write={15} bad_frame={16} bad_value={17} bad_device={18} wrapped_reg={19}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -1180,8 +1199,9 @@ try {
         $htmlText.Contains('保存阈值') -and
         $htmlText.Contains('/api/health') -and
         $htmlText.Contains('/api/live') -and
-        $htmlText.Contains('/api/camera.jpg') -and
-        $htmlText.Contains('const CAMERA_REFRESH_MS = 500') -and
+        $htmlText.Contains('stream.mjpg') -and
+        $htmlText.Contains('const CAMERA_STREAM_PORT = 81') -and
+        $htmlText.Contains('const CAMERA_STREAM_TARGET_FPS = 20') -and
         $htmlText.Contains('/api/camera/control') -and
         $htmlText.Contains('/api/register') -and
         $htmlText.Contains('/api/system/control') -and
@@ -1238,7 +1258,7 @@ $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- Camera JPEG capture, camera controls and safe hardware register access are verified through HTTP APIs'
-$reportLines += '- Camera dashboard refresh uses a 500 ms completion-driven image loop with bounded JPEG latency'
+$reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'

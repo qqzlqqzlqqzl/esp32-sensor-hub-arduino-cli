@@ -2,11 +2,13 @@
 
 #include "xl9555.h"
 
+#include <freertos/semphr.h>
 #include <string.h>
 
 namespace {
 
 BoardCameraStatus gCamera;
+SemaphoreHandle_t gCameraMutex = nullptr;
 
 constexpr int kPinD0 = 4;
 constexpr int kPinD1 = 5;
@@ -75,6 +77,19 @@ bool applySetter(int (*setter)(sensor_t *, int), int value) {
   return ok;
 }
 
+bool lockCamera(TickType_t timeoutTicks) {
+  if (!gCameraMutex) {
+    gCameraMutex = xSemaphoreCreateMutex();
+  }
+  return gCameraMutex && xSemaphoreTake(gCameraMutex, timeoutTicks) == pdTRUE;
+}
+
+void unlockCamera() {
+  if (gCameraMutex) {
+    xSemaphoreGive(gCameraMutex);
+  }
+}
+
 }  // namespace
 
 namespace boardcamera {
@@ -86,6 +101,9 @@ bool begin() {
 
   gCamera.psram = psramFound();
   gCamera.externalClock = true;
+  if (!gCameraMutex) {
+    gCameraMutex = xSemaphoreCreateMutex();
+  }
   resetModule();
 
   camera_config_t config = {};
@@ -109,9 +127,9 @@ bool begin() {
   config.ledc_timer = LEDC_TIMER_1;
   config.ledc_channel = LEDC_CHANNEL_1;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QVGA;
-  config.jpeg_quality = 16;
-  config.fb_count = gCamera.psram ? 2 : 1;
+  config.frame_size = FRAMESIZE_QQVGA;
+  config.jpeg_quality = 30;
+  config.fb_count = 2;
   config.fb_location = gCamera.psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.sccb_i2c_port = 1;
@@ -132,8 +150,9 @@ bool isReady() {
 }
 
 const BoardCameraStatus &status() {
-  if (gCamera.online) {
+  if (gCamera.online && lockCamera(pdMS_TO_TICKS(50))) {
     refreshStatusFromSensor();
+    unlockCamera();
   }
   return gCamera;
 }
@@ -143,12 +162,17 @@ camera_fb_t *capture() {
     gCamera.captureFailures++;
     return nullptr;
   }
+  if (!lockCamera(pdMS_TO_TICKS(250))) {
+    gCamera.captureFailures++;
+    return nullptr;
+  }
 
   const uint32_t startedAt = millis();
   camera_fb_t *frame = esp_camera_fb_get();
   gCamera.lastCaptureDurationMs = millis() - startedAt;
   if (!frame) {
     gCamera.captureFailures++;
+    unlockCamera();
     return nullptr;
   }
 
@@ -164,11 +188,16 @@ void release(camera_fb_t *frame) {
   if (frame) {
     esp_camera_fb_return(frame);
   }
+  unlockCamera();
 }
 
 bool setControl(const String &name, int value) {
+  if (!lockCamera(pdMS_TO_TICKS(250))) {
+    return false;
+  }
   sensor_t *sensor = esp_camera_sensor_get();
   if (!sensor) {
+    unlockCamera();
     return false;
   }
 
@@ -226,24 +255,37 @@ bool setControl(const String &name, int value) {
   }
 
   refreshStatusFromSensor();
+  unlockCamera();
   return ok;
 }
 
 bool readRegister(uint16_t reg, uint8_t mask, int *value) {
+  if (!lockCamera(pdMS_TO_TICKS(250))) {
+    return false;
+  }
   sensor_t *sensor = esp_camera_sensor_get();
   if (!sensor || !sensor->get_reg || !value) {
+    unlockCamera();
     return false;
   }
   *value = sensor->get_reg(sensor, reg, mask);
-  return *value >= 0;
+  const bool ok = *value >= 0;
+  unlockCamera();
+  return ok;
 }
 
 bool writeRegister(uint16_t reg, uint8_t mask, uint8_t value) {
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor || !sensor->set_reg) {
+  if (!lockCamera(pdMS_TO_TICKS(250))) {
     return false;
   }
-  return sensor->set_reg(sensor, reg, mask, value) == 0;
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (!sensor || !sensor->set_reg) {
+    unlockCamera();
+    return false;
+  }
+  const bool ok = sensor->set_reg(sensor, reg, mask, value) == 0;
+  unlockCamera();
+  return ok;
 }
 
 const char *frameSizeName(int frameSize) {

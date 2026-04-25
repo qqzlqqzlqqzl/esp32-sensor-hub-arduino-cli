@@ -55,6 +55,9 @@ constexpr unsigned long kDashboardLiveIntervalMs = 500;
 constexpr unsigned long kLivePayloadCacheTtlMs = 1000;
 constexpr unsigned long kDashboardSnapshotIntervalMs = 10000;
 constexpr unsigned long kSerialReportIntervalMs = 10000;
+constexpr uint16_t kCameraStreamPort = 81;
+constexpr uint16_t kCameraStreamTargetFps = 20;
+constexpr uint32_t kCameraStreamFrameIntervalMs = 1000 / kCameraStreamTargetFps;
 constexpr size_t kHistoryCapacity = 120;
 constexpr char kLogPath[] = "/sensor_log.csv";
 constexpr char kRotatedLogPath[] = "/sensor_log.old.csv";
@@ -70,6 +73,12 @@ constexpr char kStaSsid[] = WIFI_STA_SSID;
 constexpr char kStaPass[] = WIFI_STA_PASS;
 
 WebServer server(80);
+WiFiServer cameraStreamServer(kCameraStreamPort);
+TaskHandle_t gCameraStreamTask = nullptr;
+volatile uint32_t gCameraStreamClients = 0;
+volatile uint32_t gCameraStreamFrameCount = 0;
+volatile uint32_t gCameraStreamLastFpsX100 = 0;
+volatile uint32_t gCameraStreamLastClientMs = 0;
 
 struct DhtState {
   bool online = false;
@@ -541,8 +550,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="value sm" id="cameraState">--</div>
         <div class="meta" id="cameraMeta">waiting</div>
         <img id="cameraFrame" class="camera-img" alt="camera">
-        <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option>QQVGA</option><option selected>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
-        <div class="control-row"><span>JPEG 质量</span><input id="camQuality" type="range" min="4" max="35" value="16"><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
+        <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option selected>QQVGA</option><option>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
+        <div class="control-row"><span>JPEG 质量</span><input id="camQuality" type="range" min="4" max="35" value="30"><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
         <div class="control-row"><span>亮度</span><input id="camBrightness" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
         <div class="control-row"><span>对比度</span><input id="camContrast" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="contrast" data-cam-input="camContrast" type="button">设</button></div>
         <div class="control-row"><span>饱和度</span><input id="camSaturation" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="saturation" data-cam-input="camSaturation" type="button">设</button></div>
@@ -667,15 +676,13 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     };
     let latestStatus = null;
     let configInputsDirty = false;
-    let cameraFrameTimer = 0;
-    let cameraFrameInFlight = false;
-    let cameraFrameStartedAt = 0;
-    let cameraFrameCount = 0;
-    let cameraFrameLoadMs = null;
+    let cameraStreamTimer = 0;
+    let cameraStreamStarted = false;
     const LIVE_POLL_MS = 500;
     const SNAPSHOT_POLL_MS = 10000;
-    const CAMERA_REFRESH_MS = 500;
-    const CAMERA_RETRY_MS = 1200;
+    const CAMERA_STREAM_PORT = 81;
+    const CAMERA_STREAM_TARGET_FPS = 20;
+    const CAMERA_STREAM_RETRY_MS = 1200;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
     function fmtNum(v, digits = 1) { return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits); }
@@ -958,8 +965,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       if (status.camera) {
         statusEls.cameraState.textContent = status.camera.online ? `${status.camera.name} ${status.camera.frame_size_name}` : 'offline';
         statusEls.cameraState.className = `value sm ${status.camera.online ? 'ok' : 'bad'}`;
-        const imageMetric = cameraFrameLoadMs === null ? '' : ` / img ${cameraFrameLoadMs}ms / ui ${cameraFrameCount}`;
-        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / sensor ${status.camera.last_capture_duration_ms}ms${imageMetric}`;
+        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / ${fmtNum(status.camera.stream_fps, 1)} fps / stream ${status.camera.stream_clients}`;
         statusEls.camFrameSize.value = status.camera.frame_size_name;
         statusEls.camQuality.value = status.camera.quality;
         statusEls.camBrightness.value = status.camera.brightness;
@@ -1036,38 +1042,35 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       }
     }
 
-    function scheduleCameraLoop(delayMs) {
-      if (cameraFrameTimer) clearTimeout(cameraFrameTimer);
-      cameraFrameTimer = setTimeout(cameraLoop, delayMs);
+    function cameraStreamUrl() {
+      return `${location.protocol}//${location.hostname}:${CAMERA_STREAM_PORT}/stream.mjpg?t=${Date.now()}`;
     }
 
-    function cameraLoop() {
-      if (cameraFrameInFlight) {
+    function scheduleCameraStream(delayMs) {
+      if (cameraStreamTimer) clearTimeout(cameraStreamTimer);
+      cameraStreamTimer = setTimeout(startCameraStream, delayMs);
+    }
+
+    function startCameraStream() {
+      if (cameraStreamStarted) {
         return;
       }
       if (latestStatus && latestStatus.camera && latestStatus.camera.online) {
-        cameraFrameInFlight = true;
-        cameraFrameStartedAt = performance.now();
-        statusEls.cameraFrame.src = `/api/camera.jpg?t=${Date.now()}`;
+        cameraStreamStarted = true;
+        statusEls.cameraFrame.src = cameraStreamUrl();
       } else {
-        scheduleCameraLoop(CAMERA_RETRY_MS);
+        scheduleCameraStream(CAMERA_STREAM_RETRY_MS);
       }
     }
 
-    statusEls.cameraFrame.addEventListener('load', () => {
-      cameraFrameInFlight = false;
-      cameraFrameCount++;
-      cameraFrameLoadMs = Math.round(performance.now() - cameraFrameStartedAt);
-      scheduleCameraLoop(CAMERA_REFRESH_MS);
-    });
     statusEls.cameraFrame.addEventListener('error', () => {
-      cameraFrameInFlight = false;
-      scheduleCameraLoop(CAMERA_RETRY_MS);
+      cameraStreamStarted = false;
+      scheduleCameraStream(CAMERA_STREAM_RETRY_MS);
     });
 
     snapshotLoop();
     liveLoop();
-    scheduleCameraLoop(100);
+    scheduleCameraStream(100);
   </script>
 </body>
 </html>
@@ -2451,6 +2454,18 @@ void appendCameraJson(String &json) {
   json += String(cam.lastWidth);
   json += ",\"last_height\":";
   json += String(cam.lastHeight);
+  json += ",\"stream_port\":";
+  json += String(kCameraStreamPort);
+  json += ",\"stream_target_fps\":";
+  json += String(kCameraStreamTargetFps);
+  json += ",\"stream_clients\":";
+  json += String(static_cast<uint32_t>(gCameraStreamClients));
+  json += ",\"stream_frame_count\":";
+  json += String(static_cast<uint32_t>(gCameraStreamFrameCount));
+  json += ",\"stream_fps\":";
+  json += String(static_cast<float>(gCameraStreamLastFpsX100) / 100.0f, 2);
+  json += ",\"stream_last_client_ms\":";
+  json += String(static_cast<uint32_t>(gCameraStreamLastClientMs));
   json += "}";
 }
 
@@ -3079,6 +3094,82 @@ void handleCameraJpeg() {
   boardcamera::release(frame);
 }
 
+void streamCameraClient(WiFiClient &client) {
+  client.setNoDelay(true);
+  client.print("HTTP/1.1 200 OK\r\n");
+  client.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
+  client.print("Cache-Control: no-store, no-cache, must-revalidate\r\n");
+  client.print("Pragma: no-cache\r\n");
+  client.print("Connection: close\r\n");
+  client.print("Access-Control-Allow-Origin: *\r\n\r\n");
+
+  gCameraStreamClients++;
+  const uint32_t clientStartedAt = millis();
+  uint32_t framesThisClient = 0;
+  uint32_t fpsWindowStartedAt = millis();
+  uint32_t fpsWindowFrames = 0;
+
+  while (client.connected()) {
+    const uint32_t frameStartedAt = millis();
+    camera_fb_t *frame = boardcamera::capture();
+    if (!frame) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\nX-Frame-Number: %lu\r\n\r\n",
+                  static_cast<unsigned int>(frame->len),
+                  static_cast<unsigned long>(gCameraStreamFrameCount + 1));
+    const size_t written = client.write(frame->buf, frame->len);
+    client.print("\r\n");
+    boardcamera::release(frame);
+
+    if (written != frame->len) {
+      break;
+    }
+
+    gCameraStreamFrameCount++;
+    framesThisClient++;
+    fpsWindowFrames++;
+
+    const uint32_t nowMs = millis();
+    const uint32_t fpsWindowMs = nowMs - fpsWindowStartedAt;
+    if (fpsWindowMs >= 1000) {
+      gCameraStreamLastFpsX100 = (fpsWindowFrames * 100000UL) / fpsWindowMs;
+      fpsWindowFrames = 0;
+      fpsWindowStartedAt = nowMs;
+    }
+
+    const uint32_t frameElapsedMs = millis() - frameStartedAt;
+    if (frameElapsedMs < kCameraStreamFrameIntervalMs) {
+      vTaskDelay(pdMS_TO_TICKS(kCameraStreamFrameIntervalMs - frameElapsedMs));
+    } else {
+      taskYIELD();
+    }
+  }
+
+  const uint32_t clientElapsedMs = millis() - clientStartedAt;
+  if (clientElapsedMs > 0 && framesThisClient > 0) {
+    gCameraStreamLastFpsX100 = (framesThisClient * 100000UL) / clientElapsedMs;
+  }
+  gCameraStreamLastClientMs = clientElapsedMs;
+  if (gCameraStreamClients > 0) {
+    gCameraStreamClients--;
+  }
+}
+
+void cameraStreamTask(void *parameter) {
+  (void)parameter;
+  for (;;) {
+    WiFiClient client = cameraStreamServer.available();
+    if (client) {
+      streamCameraClient(client);
+      client.stop();
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 void handleCameraControl() {
   if (server.method() != HTTP_POST) {
     server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
@@ -3401,6 +3492,10 @@ void setupServer() {
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
   server.begin();
+  cameraStreamServer.begin();
+  if (!gCameraStreamTask) {
+    xTaskCreatePinnedToCore(cameraStreamTask, "camera_stream", 6144, nullptr, 1, &gCameraStreamTask, 0);
+  }
   gBoot.serverStartMs = millis() - startedAt;
 }
 
