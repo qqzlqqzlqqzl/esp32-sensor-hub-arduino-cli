@@ -158,6 +158,7 @@ statusEls.camQuality.dispatch('input');
 renderLive(statusWithCamera({ quality: 18 }));
 assert(statusEls.camQuality.value === '31', 'dirty quality slider was overwritten by live status');
 assert(statusEls.camQuality.dataset.userEditing === '1', 'dirty quality slider did not keep edit lock');
+assert(statusEls.camQuality.dataset.localValue === '31', 'dirty quality slider did not capture local value');
 
 delete statusEls.camQuality.dataset.userEditing;
 document.activeElement = statusEls.camQuality;
@@ -169,6 +170,19 @@ document.activeElement = null;
 clearCameraControlEditing(statusEls.camQuality);
 renderLive(statusWithCamera({ quality: 18 }));
 assert(statusEls.camQuality.value === '18' || statusEls.camQuality.value === 18, 'quality did not resync after edit lock cleared');
+
+statusEls.camQuality.value = '34';
+statusEls.camQuality.dispatch('mousedown');
+statusEls.camQuality.dispatch('input');
+statusEls.camQuality.dispatch('mouseup');
+statusEls.camQuality.dispatch('blur');
+document.activeElement = null;
+renderLive(statusWithCamera({ quality: 18 }));
+assert(statusEls.camQuality.value === '34', 'released quality slider snapped back before apply');
+assert(statusEls.camQuality.dataset.userEditing === '1', 'released quality slider lost edit lock');
+clearCameraControlEditing(statusEls.camQuality);
+renderLive(statusWithCamera({ quality: 19 }));
+assert(statusEls.camQuality.value === '19' || statusEls.camQuality.value === 19, 'quality did not resync after released edit lock cleared');
 
 statusEls.camFrameSize.value = 'SVGA';
 statusEls.camFrameSize.dispatch('change');

@@ -884,6 +884,8 @@ function Test-DashboardEditLockImplementation {
         'bindCameraControlEditing',
         'markCameraControlEditing',
         'clearCameraControlEditing',
+        'cameraControlIsEditing',
+        'dataset.localValue',
         'dataset.userEditing',
         'document.activeElement === input',
         'updateCameraControlFromStatus(statusEls.camQuality',

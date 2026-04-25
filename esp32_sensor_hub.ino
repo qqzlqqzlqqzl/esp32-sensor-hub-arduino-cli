@@ -941,18 +941,31 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     ];
 
     function markCameraControlEditing(input) {
-      if (input) input.dataset.userEditing = '1';
+      if (!input) return;
+      input.dataset.userEditing = '1';
+      input.dataset.localValue = String(input.value);
+      input.dataset.lockedAt = String(Date.now());
     }
 
     function clearCameraControlEditing(input) {
-      if (input) delete input.dataset.userEditing;
+      if (!input) return;
+      delete input.dataset.userEditing;
+      delete input.dataset.localValue;
+      delete input.dataset.lockedAt;
+    }
+
+    function cameraControlIsEditing(input) {
+      if (!input) return false;
+      if (input.dataset.userEditing === '1') return true;
+      if (document.activeElement === input) return true;
+      return input.dataset.localValue !== undefined && String(input.value) === String(input.dataset.localValue);
     }
 
     function bindCameraControlEditing() {
       cameraControlInputKeys.forEach(key => {
         const input = statusEls[key];
         if (!input) return;
-        ['focus', 'pointerdown', 'input', 'change'].forEach(eventName => {
+        ['focus', 'pointerdown', 'mousedown', 'touchstart', 'keydown', 'input', 'change', 'pointerup', 'mouseup', 'touchend', 'blur'].forEach(eventName => {
           input.addEventListener(eventName, () => markCameraControlEditing(input));
         });
       });
@@ -960,7 +973,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
 
     function updateCameraControlFromStatus(input, value) {
       if (!input) return;
-      if (input.dataset.userEditing === '1' || document.activeElement === input) return;
+      if (cameraControlIsEditing(input)) return;
       input.value = value;
     }
 
@@ -3313,6 +3326,9 @@ String healthJson() {
 }
 
 void handleRoot() {
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "0");
   server.send_P(200, "text/html; charset=utf-8", kDashboardHtml);
 }
 
