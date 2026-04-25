@@ -13,6 +13,8 @@ struct Ap3216cReading {
 namespace ap3216c {
 bool begin();
 bool read(Ap3216cReading *reading);
+bool readRegister(uint8_t reg, uint8_t *value);
+bool writeRegister(uint8_t reg, uint8_t value);
 }
 
 #endif

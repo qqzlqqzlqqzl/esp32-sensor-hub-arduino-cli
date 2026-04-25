@@ -438,4 +438,12 @@ bool isReady() {
   return gReady;
 }
 
+bool readRegister(uint8_t reg, uint8_t *value) {
+  return readReg(reg, value);
+}
+
+bool writeRegister(uint8_t reg, uint8_t value) {
+  return writeReg(reg, value);
+}
+
 }  // namespace es8388codec

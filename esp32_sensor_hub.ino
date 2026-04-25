@@ -16,6 +16,7 @@
 #include <time.h>
 
 #include "ap3216c.h"
+#include "board_camera.h"
 #include "dht11.h"
 #include "es8388_codec.h"
 #include "qma6100p.h"
@@ -151,6 +152,7 @@ struct SystemState {
   uint8_t cores = 0;
   uint16_t chipRevision = 0;
   int32_t wifiRssiDbm = 0;
+  int32_t wifiTxPower = 0;
   bool topTaskAvailable = false;
   float topTaskCpuPct = 0.0f;
   char topTaskName[20] = "";
@@ -383,6 +385,28 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       display: block;
       margin-top: 10px;
     }
+    .camera-img {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: contain;
+      background: #07101a;
+      border-radius: 8px;
+      border: 1px solid rgba(50, 79, 106, 0.55);
+      display: block;
+      margin-top: 10px;
+    }
+    .control-row {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr) 56px;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .control-row input, .control-row select {
+      width: 100%;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -513,6 +537,37 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       </section>
 
       <section class="card span-6">
+        <div class="label">MC5640 摄像头</div>
+        <div class="value sm" id="cameraState">--</div>
+        <div class="meta" id="cameraMeta">waiting</div>
+        <img id="cameraFrame" class="camera-img" alt="camera">
+        <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option>QQVGA</option><option selected>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
+        <div class="control-row"><span>JPEG 质量</span><input id="camQuality" type="range" min="4" max="35" value="16"><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
+        <div class="control-row"><span>亮度</span><input id="camBrightness" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
+        <div class="control-row"><span>对比度</span><input id="camContrast" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="contrast" data-cam-input="camContrast" type="button">设</button></div>
+        <div class="control-row"><span>饱和度</span><input id="camSaturation" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="saturation" data-cam-input="camSaturation" type="button">设</button></div>
+        <div class="control-row"><span>曝光</span><input id="camAecValue" type="range" min="0" max="1200" value="300"><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
+        <div class="control-row"><span>增益</span><input id="camAgcGain" type="range" min="0" max="30" value="0"><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
+        <div class="control-row"><span>镜像</span><select id="camMirror"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="hmirror" data-cam-input="camMirror" type="button">设</button></div>
+      </section>
+      <section class="card span-6">
+        <div class="label">硬件控制台</div>
+        <div class="kv">
+          <div><span>设备</span><select id="regDevice"><option value="ap3216c">AP3216C</option><option value="es8388">ES8388</option><option value="qma6100p">QMA6100P</option><option value="xl9555">XL9555</option><option value="ov5640">OV5640</option></select></div>
+          <div><span>寄存器</span><input id="regAddr" value="0x00"></div>
+          <div><span>Mask</span><input id="regMask" value="0xff"></div>
+          <div><span>Value</span><input id="regValue" value="0x00"></div>
+        </div>
+        <div class="toolbar">
+          <button id="regReadBtn" class="btn" type="button">读寄存器</button>
+          <button id="regWriteBtn" class="btn" type="button">写寄存器</button>
+        </div>
+        <div class="meta mono" id="regState">register console ready</div>
+        <div class="control-row"><span>CPU MHz</span><select id="cpuMhzControl"><option>80</option><option>160</option><option selected>240</option></select><button id="cpuMhzBtn" class="btn" type="button">设</button></div>
+        <div class="control-row"><span>WiFi Tx</span><select id="wifiPowerControl"><option value="-4">-1dBm</option><option value="8">2dBm</option><option value="20">5dBm</option><option value="28">7dBm</option><option value="34">8.5dBm</option><option value="44">11dBm</option><option value="52">13dBm</option><option value="60">15dBm</option><option value="68">17dBm</option><option value="78">19.5dBm</option></select><button id="wifiPowerBtn" class="btn" type="button">设</button></div>
+      </section>
+
+      <section class="card span-6">
         <div class="label">温湿度与芯片温度</div>
         <canvas id="climateChart" width="560" height="200"></canvas>
       </section>
@@ -571,6 +626,28 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       alertLine: document.getElementById('alertLine'),
       alertCount: document.getElementById('alertCount'),
       alertSummary: document.getElementById('alertSummary'),
+      cameraState: document.getElementById('cameraState'),
+      cameraMeta: document.getElementById('cameraMeta'),
+      cameraFrame: document.getElementById('cameraFrame'),
+      camFrameSize: document.getElementById('camFrameSize'),
+      camQuality: document.getElementById('camQuality'),
+      camBrightness: document.getElementById('camBrightness'),
+      camContrast: document.getElementById('camContrast'),
+      camSaturation: document.getElementById('camSaturation'),
+      camAecValue: document.getElementById('camAecValue'),
+      camAgcGain: document.getElementById('camAgcGain'),
+      camMirror: document.getElementById('camMirror'),
+      regDevice: document.getElementById('regDevice'),
+      regAddr: document.getElementById('regAddr'),
+      regMask: document.getElementById('regMask'),
+      regValue: document.getElementById('regValue'),
+      regState: document.getElementById('regState'),
+      regReadBtn: document.getElementById('regReadBtn'),
+      regWriteBtn: document.getElementById('regWriteBtn'),
+      cpuMhzControl: document.getElementById('cpuMhzControl'),
+      cpuMhzBtn: document.getElementById('cpuMhzBtn'),
+      wifiPowerControl: document.getElementById('wifiPowerControl'),
+      wifiPowerBtn: document.getElementById('wifiPowerBtn'),
       configState: document.getElementById('configState'),
       cfgTempHigh: document.getElementById('cfgTempHigh'),
       cfgHumidityHigh: document.getElementById('cfgHumidityHigh'),
@@ -592,6 +669,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     let configInputsDirty = false;
     const LIVE_POLL_MS = 500;
     const SNAPSHOT_POLL_MS = 10000;
+    const CAMERA_REFRESH_MS = 2000;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
     function fmtNum(v, digits = 1) { return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits); }
@@ -760,6 +838,59 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       configInputsDirty = true;
     }));
 
+    async function applyCameraControl(name, value) {
+      const params = new URLSearchParams({ name, value });
+      const res = await fetch(`/api/camera/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+      statusEls.cameraMeta.textContent = res.ok ? `${name} applied` : `${name} rejected`;
+      setTimeout(refreshLive, 300);
+    }
+
+    document.querySelectorAll('[data-cam]').forEach(button => {
+      button.addEventListener('click', () => {
+        const input = document.getElementById(button.dataset.camInput);
+        applyCameraControl(button.dataset.cam, input.value).catch(() => {
+          statusEls.cameraMeta.textContent = 'camera control failed';
+        });
+      });
+    });
+    document.querySelectorAll('[data-cam-select]').forEach(button => {
+      button.addEventListener('click', () => {
+        const input = document.getElementById(button.dataset.camInput);
+        applyCameraControl(button.dataset.camSelect, input.value).catch(() => {
+          statusEls.cameraMeta.textContent = 'camera control failed';
+        });
+      });
+    });
+
+    async function accessRegister(write) {
+      const params = new URLSearchParams({
+        device: statusEls.regDevice.value,
+        reg: statusEls.regAddr.value,
+        mask: statusEls.regMask.value,
+      });
+      if (write) params.set('value', statusEls.regValue.value);
+      const res = await fetch(`/api/register?${params.toString()}`, { method: write ? 'POST' : 'GET', cache: 'no-store' });
+      const json = await res.json();
+      if (json.ok) statusEls.regValue.value = `0x${Number(json.value).toString(16)}`;
+      statusEls.regState.textContent = JSON.stringify(json);
+    }
+    statusEls.regReadBtn.addEventListener('click', () => accessRegister(false).catch(error => {
+      statusEls.regState.textContent = error.message;
+    }));
+    statusEls.regWriteBtn.addEventListener('click', () => accessRegister(true).catch(error => {
+      statusEls.regState.textContent = error.message;
+    }));
+    statusEls.cpuMhzBtn.addEventListener('click', async () => {
+      const params = new URLSearchParams({ cpu_mhz: statusEls.cpuMhzControl.value });
+      await fetch(`/api/system/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+      setTimeout(refreshLive, 300);
+    });
+    statusEls.wifiPowerBtn.addEventListener('click', async () => {
+      const params = new URLSearchParams({ wifi_tx_power: statusEls.wifiPowerControl.value });
+      await fetch(`/api/system/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+      setTimeout(refreshLive, 300);
+    });
+
     function renderLive(status) {
       latestStatus = status;
 
@@ -818,6 +949,19 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.alertSummary.className = `meta ${status.alerts.active ? 'bad' : 'ok'}`;
       statusEls.alertLine.style.display = status.alerts.active ? 'block' : 'none';
       statusEls.alertLine.textContent = status.alerts.summary;
+      if (status.camera) {
+        statusEls.cameraState.textContent = status.camera.online ? `${status.camera.name} ${status.camera.frame_size_name}` : 'offline';
+        statusEls.cameraState.className = `value sm ${status.camera.online ? 'ok' : 'bad'}`;
+        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count}`;
+        statusEls.camFrameSize.value = status.camera.frame_size_name;
+        statusEls.camQuality.value = status.camera.quality;
+        statusEls.camBrightness.value = status.camera.brightness;
+        statusEls.camContrast.value = status.camera.contrast;
+        statusEls.camSaturation.value = status.camera.saturation;
+        statusEls.camAecValue.value = status.camera.aec_value;
+        statusEls.camAgcGain.value = status.camera.agc_gain;
+        statusEls.camMirror.value = status.camera.hmirror ? '1' : '0';
+      }
       if (status.config) {
         if (!configInputsDirty) {
           statusEls.cfgTempHigh.value = status.config.temp_high_c;
@@ -885,8 +1029,16 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       }
     }
 
+    function cameraLoop() {
+      if (latestStatus && latestStatus.camera && latestStatus.camera.online) {
+        statusEls.cameraFrame.src = `/api/camera.jpg?t=${Date.now()}`;
+      }
+      setTimeout(cameraLoop, CAMERA_REFRESH_MS);
+    }
+
     snapshotLoop();
     liveLoop();
+    cameraLoop();
   </script>
 </body>
 </html>
@@ -927,6 +1079,52 @@ String currentNetworkMode() {
 
 int32_t currentRssiDbm() {
   return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+}
+
+bool parseUnsignedArg(const char *name, uint32_t maxValue, uint32_t *value) {
+  if (!value || !server.hasArg(name)) {
+    return false;
+  }
+  const String raw = server.arg(name);
+  if (raw.length() == 0) {
+    return false;
+  }
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(raw.c_str(), &end, 0);
+  if (!end || *end != '\0' || parsed > maxValue) {
+    return false;
+  }
+  *value = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool parseSignedText(const String &raw, int32_t minValue, int32_t maxValue, int32_t *value) {
+  if (!value || raw.length() == 0) {
+    return false;
+  }
+  char *end = nullptr;
+  const long parsed = strtol(raw.c_str(), &end, 0);
+  if (!end || *end != '\0' || parsed < minValue || parsed > maxValue) {
+    return false;
+  }
+  *value = static_cast<int32_t>(parsed);
+  return true;
+}
+
+uint8_t parseUint8Arg(const char *name, uint8_t fallback) {
+  if (!server.hasArg(name)) {
+    return fallback;
+  }
+  uint32_t value = 0;
+  return parseUnsignedArg(name, 255, &value) ? static_cast<uint8_t>(value) : fallback;
+}
+
+uint16_t parseUint16Arg(const char *name, uint16_t fallback) {
+  if (!server.hasArg(name)) {
+    return fallback;
+  }
+  uint32_t value = 0;
+  return parseUnsignedArg(name, 65535, &value) ? static_cast<uint16_t>(value) : fallback;
 }
 
 float clampFloat(float value, float minValue, float maxValue) {
@@ -1367,6 +1565,7 @@ void updateSystemStatsIfDue() {
   gSystem.maxAllocHeapBytes = ESP.getMaxAllocHeap();
   gSystem.uptimeSec = millis() / 1000UL;
   gSystem.wifiRssiDbm = currentRssiDbm();
+  gSystem.wifiTxPower = static_cast<int32_t>(WiFi.getTxPower());
   snprintf(gSystem.resetReason, sizeof(gSystem.resetReason), "%s", resetReasonName(esp_reset_reason()));
   snprintf(gSystem.displayPageName, sizeof(gSystem.displayPageName), "%s", displayPageName(gSystem.displayPage));
 
@@ -2153,6 +2352,77 @@ void appendBootJson(String &json) {
   json += "}";
 }
 
+void appendCameraJson(String &json) {
+  const BoardCameraStatus &cam = boardcamera::status();
+  json += "\"camera\":{\"online\":";
+  json += cam.online ? "true" : "false";
+  json += ",\"name\":\"";
+  json += cam.name;
+  json += "\",\"pid\":";
+  json += String(cam.pid);
+  json += ",\"init_error\":";
+  json += String(cam.initError);
+  json += ",\"psram\":";
+  json += cam.psram ? "true" : "false";
+  json += ",\"external_clock\":";
+  json += cam.externalClock ? "true" : "false";
+  json += ",\"frame_size\":";
+  json += String(cam.frameSize);
+  json += ",\"frame_size_name\":\"";
+  json += boardcamera::frameSizeName(cam.frameSize);
+  json += "\",\"quality\":";
+  json += String(cam.quality);
+  json += ",\"brightness\":";
+  json += String(cam.brightness);
+  json += ",\"contrast\":";
+  json += String(cam.contrast);
+  json += ",\"saturation\":";
+  json += String(cam.saturation);
+  json += ",\"sharpness\":";
+  json += String(cam.sharpness);
+  json += ",\"special_effect\":";
+  json += String(cam.specialEffect);
+  json += ",\"wb_mode\":";
+  json += String(cam.wbMode);
+  json += ",\"awb\":";
+  json += String(cam.awb);
+  json += ",\"awb_gain\":";
+  json += String(cam.awbGain);
+  json += ",\"aec\":";
+  json += String(cam.aec);
+  json += ",\"aec2\":";
+  json += String(cam.aec2);
+  json += ",\"ae_level\":";
+  json += String(cam.aeLevel);
+  json += ",\"aec_value\":";
+  json += String(cam.aecValue);
+  json += ",\"agc\":";
+  json += String(cam.agc);
+  json += ",\"agc_gain\":";
+  json += String(cam.agcGain);
+  json += ",\"gainceiling\":";
+  json += String(cam.gainCeiling);
+  json += ",\"hmirror\":";
+  json += String(cam.hmirror);
+  json += ",\"vflip\":";
+  json += String(cam.vflip);
+  json += ",\"colorbar\":";
+  json += String(cam.colorbar);
+  json += ",\"capture_count\":";
+  json += String(cam.captureCount);
+  json += ",\"capture_failures\":";
+  json += String(cam.captureFailures);
+  json += ",\"last_capture_ms\":";
+  json += String(cam.lastCaptureMs);
+  json += ",\"last_frame_bytes\":";
+  json += String(cam.lastFrameBytes);
+  json += ",\"last_width\":";
+  json += String(cam.lastWidth);
+  json += ",\"last_height\":";
+  json += String(cam.lastHeight);
+  json += "}";
+}
+
 String statusJson() {
   String json;
   json.reserve(2600);
@@ -2274,6 +2544,8 @@ String statusJson() {
   json += String(gSystem.cpuUsagePct, 2);
   json += ",\"cpu_freq_mhz\":";
   json += String(gSystem.cpuFreqMhz);
+  json += ",\"wifi_tx_power\":";
+  json += String(gSystem.wifiTxPower);
   json += ",\"free_heap_bytes\":";
   json += String(gSystem.freeHeapBytes);
   json += ",\"min_free_heap_bytes\":";
@@ -2350,6 +2622,8 @@ String statusJson() {
   json += ",\"last_test_ms\":";
   json += String(gSpeaker.lastTestMs);
   json += "}";
+  json += ",";
+  appendCameraJson(json);
   json += ",";
   appendBootJson(json);
   json += "}";
@@ -2526,6 +2800,8 @@ String liveJson() {
   json += String(gSystem.cpuUsagePct, 2);
   json += ",\"cpu_freq_mhz\":";
   json += String(gSystem.cpuFreqMhz);
+  json += ",\"wifi_tx_power\":";
+  json += String(gSystem.wifiTxPower);
   json += ",\"free_heap_bytes\":";
   json += String(gSystem.freeHeapBytes);
   json += ",\"min_free_heap_bytes\":";
@@ -2565,6 +2841,8 @@ String liveJson() {
   json += ",\"last_spoken_temp_c\":";
   json += String(gSpeaker.lastSpokenTempC);
   json += "},";
+  appendCameraJson(json);
+  json += ",";
   appendBootJson(json);
   json += "}";
   gLiveJsonCache = json;
@@ -2576,7 +2854,8 @@ String healthJson() {
   const bool storageOk = gLittleFsReady && gStorageWriteFailures == 0 && gDroppedSamples == 0;
   const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && gDisplayReady;
   const bool speakerOk = gSpeaker.online && gSpeaker.loopbackPassed;
-  const bool ok = storageOk && sensorsOk && speakerOk && !gAlerts.active;
+  const bool cameraOk = boardcamera::isReady();
+  const bool ok = storageOk && sensorsOk && speakerOk && cameraOk && !gAlerts.active;
   const char *state = ok ? "OK" : (gAlerts.active ? "ALERT" : "DEGRADED");
 
   String json;
@@ -2603,6 +2882,8 @@ String healthJson() {
   json += sensorsOk ? "true" : "false";
   json += ",\"speaker_ok\":";
   json += speakerOk ? "true" : "false";
+  json += ",\"camera_ok\":";
+  json += cameraOk ? "true" : "false";
   json += ",\"alerts_active\":";
   json += gAlerts.active ? "true" : "false";
   json += ",\"alert_count\":";
@@ -2742,6 +3023,273 @@ void handleConfig() {
   server.send(200, "application/json; charset=utf-8", json);
 }
 
+void handleCameraStatus() {
+  String json;
+  json.reserve(900);
+  json += "{";
+  appendCameraJson(json);
+  json += "}";
+  server.send(200, "application/json; charset=utf-8", json);
+}
+
+void handleCameraJpeg() {
+  camera_fb_t *frame = boardcamera::capture();
+  if (!frame) {
+    server.send(503, "application/json; charset=utf-8", "{\"captured\":false}");
+    return;
+  }
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Content-Length", String(frame->len));
+  server.setContentLength(frame->len);
+  server.send(200, "image/jpeg", "");
+  WiFiClient client = server.client();
+  client.write(frame->buf, frame->len);
+  boardcamera::release(frame);
+}
+
+void handleCameraControl() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    return;
+  }
+  if (!server.hasArg("name") || !server.hasArg("value")) {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
+    return;
+  }
+
+  String name = server.arg("name");
+  int value = 0;
+  if (name == "framesize_name") {
+    value = boardcamera::frameSizeFromName(server.arg("value"));
+    if (!boardcamera::isSupportedFrameSize(value)) {
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_framesize\"}");
+      return;
+    }
+    name = "framesize";
+  } else {
+    int32_t parsedValue = 0;
+    if (!parseSignedText(server.arg("value"), -10000, 10000, &parsedValue)) {
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
+      return;
+    }
+    value = static_cast<int>(parsedValue);
+    if (name == "framesize" && !boardcamera::isSupportedFrameSize(value)) {
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_framesize\"}");
+      return;
+    }
+  }
+  const bool ok = boardcamera::setControl(name, value);
+  if (!ok) {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_control\"}");
+    return;
+  }
+
+  String json;
+  json.reserve(160);
+  json += "{\"applied\":true,\"name\":\"";
+  json += name;
+  json += "\",\"value\":";
+  json += String(value);
+  json += "}";
+  server.send(200, "application/json; charset=utf-8", json);
+}
+
+enum class RegisterDevice : uint8_t {
+  kInvalid,
+  kAp3216c,
+  kEs8388,
+  kQma6100p,
+  kXl9555,
+  kOv5640,
+};
+
+RegisterDevice parseRegisterDevice(const String &device) {
+  if (device == "ap3216c") return RegisterDevice::kAp3216c;
+  if (device == "es8388") return RegisterDevice::kEs8388;
+  if (device == "qma6100p") return RegisterDevice::kQma6100p;
+  if (device == "xl9555") return RegisterDevice::kXl9555;
+  if (device == "camera" || device == "ov5640") return RegisterDevice::kOv5640;
+  return RegisterDevice::kInvalid;
+}
+
+const char *registerDeviceName(RegisterDevice device) {
+  switch (device) {
+    case RegisterDevice::kAp3216c:
+      return "ap3216c";
+    case RegisterDevice::kEs8388:
+      return "es8388";
+    case RegisterDevice::kQma6100p:
+      return "qma6100p";
+    case RegisterDevice::kXl9555:
+      return "xl9555";
+    case RegisterDevice::kOv5640:
+      return "ov5640";
+    default:
+      return "invalid";
+  }
+}
+
+bool registerAddressAllowed(RegisterDevice device, uint16_t reg) {
+  if (device == RegisterDevice::kInvalid) {
+    return false;
+  }
+  if (device == RegisterDevice::kXl9555) {
+    return reg <= 7;
+  }
+  if (device == RegisterDevice::kOv5640) {
+    return true;
+  }
+  return reg <= 0xFF;
+}
+
+bool registerWriteAllowed(RegisterDevice device, uint16_t reg) {
+  if (!registerAddressAllowed(device, reg)) {
+    return false;
+  }
+  if (device == RegisterDevice::kEs8388) {
+    return reg >= 0x2E && reg <= 0x31;
+  }
+  return false;
+}
+
+bool registerRead(RegisterDevice device, uint16_t reg, uint8_t mask, int *value) {
+  if (!registerAddressAllowed(device, reg)) {
+    return false;
+  }
+  uint8_t byteValue = 0;
+  switch (device) {
+    case RegisterDevice::kAp3216c:
+      if (!ap3216c::readRegister(static_cast<uint8_t>(reg), &byteValue)) return false;
+      *value = byteValue & mask;
+      return true;
+    case RegisterDevice::kEs8388:
+      if (!es8388codec::readRegister(static_cast<uint8_t>(reg), &byteValue)) return false;
+      *value = byteValue & mask;
+      return true;
+    case RegisterDevice::kQma6100p:
+      if (!qma6100p::readRegister(static_cast<uint8_t>(reg), &byteValue)) return false;
+      *value = byteValue & mask;
+      return true;
+    case RegisterDevice::kXl9555:
+      *value = xl9555_read_reg(static_cast<uint8_t>(reg)) & mask;
+      return true;
+    case RegisterDevice::kOv5640:
+      return boardcamera::readRegister(reg, mask, value);
+    default:
+      return false;
+  }
+}
+
+bool registerWrite(RegisterDevice device, uint16_t reg, uint8_t mask, uint8_t value) {
+  if (!registerWriteAllowed(device, reg)) {
+    return false;
+  }
+  uint8_t current = 0;
+  if (device == RegisterDevice::kEs8388) {
+    if (!es8388codec::readRegister(static_cast<uint8_t>(reg), &current)) return false;
+    return es8388codec::writeRegister(static_cast<uint8_t>(reg), static_cast<uint8_t>((current & ~mask) | (value & mask)));
+  }
+  return false;
+}
+
+void handleRegisterAccess() {
+  if (server.method() != HTTP_GET && server.method() != HTTP_POST) {
+    server.send(405, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"method_not_allowed\"}");
+    return;
+  }
+
+  const RegisterDevice device = parseRegisterDevice(server.arg("device"));
+  uint32_t regValue = 0;
+  uint32_t maskValue = 0xFF;
+  if (device == RegisterDevice::kInvalid || !parseUnsignedArg("reg", 0xFFFF, &regValue)) {
+    server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_request\"}");
+    return;
+  }
+  if (server.hasArg("mask") && !parseUnsignedArg("mask", 0xFF, &maskValue)) {
+    server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_mask\"}");
+    return;
+  }
+
+  const uint16_t reg = static_cast<uint16_t>(regValue);
+  const uint8_t mask = static_cast<uint8_t>(maskValue);
+  if (!registerAddressAllowed(device, reg)) {
+    server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"reg_out_of_range\"}");
+    return;
+  }
+
+  int value = 0;
+  bool ok = false;
+  int statusCode = 400;
+  const char *error = "";
+
+  if (server.method() == HTTP_POST) {
+    uint32_t parsedValue = 0;
+    if (!parseUnsignedArg("value", 0xFF, &parsedValue)) {
+      error = "invalid_value";
+    } else if (!registerWriteAllowed(device, reg)) {
+      statusCode = 403;
+      error = "write_blocked";
+    } else {
+      const uint8_t writeValue = static_cast<uint8_t>(parsedValue);
+      ok = registerWrite(device, reg, mask, writeValue) && registerRead(device, reg, mask, &value);
+      error = ok ? "" : "write_failed";
+    }
+  } else {
+    ok = registerRead(device, reg, mask, &value);
+    error = ok ? "" : "read_failed";
+  }
+
+  String json;
+  json.reserve(220);
+  json += "{\"ok\":";
+  json += ok ? "true" : "false";
+  json += ",\"device\":\"";
+  json += registerDeviceName(device);
+  json += "\",\"reg\":";
+  json += String(reg);
+  json += ",\"mask\":";
+  json += String(mask);
+  json += ",\"value\":";
+  json += String(value);
+  if (!ok) {
+    json += ",\"error\":\"";
+    json += error;
+    json += "\"";
+  }
+  json += "}";
+  server.send(ok ? 200 : statusCode, "application/json; charset=utf-8", json);
+}
+
+void handleSystemControl() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    return;
+  }
+
+  bool ok = false;
+  if (server.hasArg("cpu_mhz")) {
+    int32_t mhz = 0;
+    if (!parseSignedText(server.arg("cpu_mhz"), 80, 240, &mhz)) {
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false}");
+      return;
+    }
+    if (mhz == 80 || mhz == 160 || mhz == 240) {
+      ok = setCpuFrequencyMhz(static_cast<uint32_t>(mhz));
+    }
+  } else if (server.hasArg("wifi_tx_power")) {
+    int32_t power = 0;
+    if (!parseSignedText(server.arg("wifi_tx_power"), WIFI_POWER_MINUS_1dBm, WIFI_POWER_19_5dBm, &power)) {
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false}");
+      return;
+    }
+    if (power >= WIFI_POWER_MINUS_1dBm && power <= WIFI_POWER_19_5dBm) {
+      ok = WiFi.setTxPower(static_cast<wifi_power_t>(power));
+    }
+  }
+  server.send(ok ? 200 : 400, "application/json; charset=utf-8", ok ? "{\"applied\":true}" : "{\"applied\":false}");
+}
+
 void handleFlush() {
   const bool ok = flushPendingLog();
   String json;
@@ -2810,6 +3358,11 @@ void setupServer() {
   server.on("/api/health", HTTP_GET, handleHealth);
   server.on("/api/live", HTTP_GET, handleLive);
   server.on("/api/history", HTTP_GET, handleHistory);
+  server.on("/api/camera", HTTP_GET, handleCameraStatus);
+  server.on("/api/camera.jpg", HTTP_GET, handleCameraJpeg);
+  server.on("/api/camera/control", HTTP_POST, handleCameraControl);
+  server.on("/api/register", HTTP_ANY, handleRegisterAccess);
+  server.on("/api/system/control", HTTP_POST, handleSystemControl);
   server.on("/api/speaker_test", HTTP_POST, handleSpeakerTest);
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);
   server.on("/api/config", HTTP_ANY, handleConfig);
@@ -2910,6 +3463,7 @@ void setup() {
   gQmaReady = qma6100p::begin();
   gMicReady = es8388codec::beginMic();
   gSpeaker.online = gMicReady && es8388codec::isReady();
+  boardcamera::begin();
   gBoot.sensorsInitMs = millis() - sensorsStartedAt;
 
   setupServer();

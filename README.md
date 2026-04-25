@@ -9,6 +9,8 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - QMA6100P motion and posture
 - ES8388 microphone level capture
 - ES8388 board speaker playback and hardware verification
+- MC5640 / OV5640 board camera JPEG snapshots in the HTML dashboard
+- Hardware control panel for camera settings, selected ESP32 controls and safe device register access
 - LittleFS CSV persistence
 - Fast boot history recovery with boot timing telemetry
 - LittleFS-backed alert threshold configuration
@@ -45,6 +47,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 
 - Arduino CLI build/upload
 - live API, HTML, CSV, LCD and speaker playback checks
+- MC5640 camera status, JPEG capture, camera control and safe register console checks
 - compact health endpoint checks through `/api/health`
 - cached lightweight live endpoint checks through `/api/live`
 - boot readiness telemetry checks through `/api/status`

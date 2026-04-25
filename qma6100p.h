@@ -16,6 +16,8 @@ struct Qma6100pReading {
 namespace qma6100p {
 bool begin();
 bool read(Qma6100pReading *reading);
+bool readRegister(uint8_t reg, uint8_t *value);
+bool writeRegister(uint8_t reg, uint8_t value);
 }
 
 #endif

@@ -62,4 +62,12 @@ bool read(Ap3216cReading *reading) {
   return true;
 }
 
+bool readRegister(uint8_t reg, uint8_t *value) {
+  return readReg(reg, value);
+}
+
+bool writeRegister(uint8_t reg, uint8_t value) {
+  return writeReg(reg, value);
+}
+
 }  // namespace ap3216c

@@ -28,6 +28,8 @@ bool playTone(uint16_t frequencyHz, uint16_t durationMs, uint8_t volume = 26);
 bool playToneAndMeasure(uint16_t frequencyHz, uint16_t durationMs, SpeakerLoopbackReading *reading, uint8_t volume = 26);
 void endMic();
 bool isReady();
+bool readRegister(uint8_t reg, uint8_t *value);
+bool writeRegister(uint8_t reg, uint8_t value);
 }
 
 #endif

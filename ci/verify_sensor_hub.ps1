@@ -1,7 +1,7 @@
 param(
     [string]$CliPath = 'C:\Program Files\Arduino CLI\arduino-cli.exe',
     [string]$SketchPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub',
-    [string]$Port = 'COM7',
+    [string]$Port = '',
     [string]$Fqbn = 'esp32:esp32:esp32s3',
     [string]$WifiSsid,
     [string]$WifiPassword,
@@ -24,6 +24,34 @@ function Add-Result {
         Step = $Step
         Passed = $Passed
         Details = $Details
+    }
+}
+
+function Resolve-UploadPort {
+    param([string]$RequestedPort)
+
+    $available = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+    if ($RequestedPort -and ($available -contains $RequestedPort)) {
+        return [pscustomobject]@{
+            Passed = $true
+            Port = $RequestedPort
+            Details = ('using requested port {0}; available={1}' -f $RequestedPort, (($available -join ', ')))
+        }
+    }
+
+    $candidates = @($available | Where-Object { $_ -ne 'COM1' })
+    if ($candidates.Count -gt 0) {
+        return [pscustomobject]@{
+            Passed = $true
+            Port = $candidates[0]
+            Details = ('using detected port {0}; requested={1}; available={2}' -f $candidates[0], $(if ($RequestedPort) { $RequestedPort } else { '(auto)' }), (($available -join ', ')))
+        }
+    }
+
+    return [pscustomobject]@{
+        Passed = $false
+        Port = $null
+        Details = ('no ESP32 upload port detected; requested={0}; available={1}' -f $(if ($RequestedPort) { $RequestedPort } else { '(auto)' }), $(if ($available.Count) { ($available -join ', ') } else { '(none)' }))
     }
 }
 
@@ -464,6 +492,7 @@ function Test-HealthEndpoint {
         ($healthJson.storage_ok -eq $true) -and
         ($healthJson.sensors_ok -eq $true) -and
         ($healthJson.speaker_ok -eq $true) -and
+        ($healthJson.camera_ok -eq $true) -and
         ($healthJson.alerts_active -eq $false) -and
         ([int]$healthJson.persisted_samples -ge 1) -and
         ([int]$healthJson.free_heap_bytes -gt 0)
@@ -485,6 +514,7 @@ function Test-LiveEndpoint {
         ($null -ne $liveJson.ap3216c) -and
         ($null -ne $liveJson.qma6100p) -and
         ($null -ne $liveJson.mic) -and
+        ($null -ne $liveJson.camera) -and
         ($null -ne $liveJson.system) -and
         ($null -ne $liveJson.storage) -and
         ($null -ne $liveJson.cadence) -and
@@ -494,6 +524,7 @@ function Test-LiveEndpoint {
         ([int]$liveJson.cadence.sample_interval_ms -eq 10000) -and
         ([int]$liveJson.cadence.flush_interval_ms -eq 10000) -and
         ([int]$liveJson.storage.live_build_count -ge 1) -and
+        ($liveJson.camera.online -eq $true) -and
         ([int]$liveJson.system.free_heap_bytes -gt 0) -and
         ([int]$liveJson.storage.persisted_samples -ge 1)
 
@@ -502,6 +533,70 @@ function Test-LiveEndpoint {
         LiveText = $liveText
         LiveJson = $liveJson
         Details = $liveText.Trim()
+    }
+}
+
+function Test-CameraEndpoint {
+    param([string]$Ip)
+
+    $cameraText = Invoke-Curl ('http://' + $Ip + '/api/camera') -TimeoutSeconds 8
+    $cameraJson = $cameraText | ConvertFrom-Json
+    $beforeCaptureCount = [int](Get-PropertyValue -Object $cameraJson.camera -Name 'capture_count' -Default 0)
+    $beforeFailures = [int](Get-PropertyValue -Object $cameraJson.camera -Name 'capture_failures' -Default 0)
+    $jpgPath = Join-Path $env:TEMP ('esp32_camera_' + [guid]::NewGuid().ToString('N') + '.jpg')
+    try {
+        & curl.exe --noproxy '*' --connect-timeout 8 --max-time 12 -sS -o $jpgPath ('http://' + $Ip + '/api/camera.jpg') | Out-Null
+        $jpgLength = if (Test-Path $jpgPath) { (Get-Item $jpgPath).Length } else { 0 }
+    }
+    finally {
+        if (Test-Path $jpgPath) {
+            Remove-Item -LiteralPath $jpgPath -Force
+        }
+    }
+
+    $regText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x00&mask=0xff') -TimeoutSeconds 6
+    $regJson = $regText | ConvertFrom-Json
+    $controlText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=18') -TimeoutSeconds 6
+    $controlJson = $controlText | ConvertFrom-Json
+    $unsafeWriteText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=xl9555&reg=0x02&mask=0xff&value=0xff') -TimeoutSeconds 6
+    $unsafeWriteJson = $unsafeWriteText | ConvertFrom-Json
+    $badFrameText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=framesize_name&value=BAD') -TimeoutSeconds 6
+    $badFrameJson = $badFrameText | ConvertFrom-Json
+    $badValueText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=BAD') -TimeoutSeconds 6
+    $badValueJson = $badValueText | ConvertFrom-Json
+    $badDeviceText = Invoke-Curl ('http://' + $Ip + '/api/register?device=bad%22device&reg=0x00') -TimeoutSeconds 6
+    $badDeviceJson = $badDeviceText | ConvertFrom-Json
+    $wrappedRegText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x100') -TimeoutSeconds 6
+    $wrappedRegJson = $wrappedRegText | ConvertFrom-Json
+    Start-Sleep -Milliseconds 500
+    $afterText = Invoke-Curl ('http://' + $Ip + '/api/camera') -TimeoutSeconds 8
+    $afterJson = $afterText | ConvertFrom-Json
+    $afterCaptureCount = [int](Get-PropertyValue -Object $afterJson.camera -Name 'capture_count' -Default 0)
+    $afterFailures = [int](Get-PropertyValue -Object $afterJson.camera -Name 'capture_failures' -Default 0)
+    $quality = [int](Get-PropertyValue -Object $afterJson.camera -Name 'quality' -Default -1)
+
+    $ok = ($cameraJson.camera.online -eq $true) -and
+        ([int](Get-PropertyValue -Object $cameraJson.camera -Name 'pid' -Default 0) -gt 0) -and
+        ($jpgLength -gt 1024) -and
+        ($afterCaptureCount -gt $beforeCaptureCount) -and
+        ($afterFailures -eq $beforeFailures) -and
+        ($regJson.ok -eq $true) -and
+        ($controlJson.applied -eq $true) -and
+        ($unsafeWriteJson.ok -eq $false) -and
+        ($unsafeWriteJson.error -eq 'write_blocked') -and
+        ($badFrameJson.applied -eq $false) -and
+        ($badFrameJson.error -eq 'unsupported_framesize') -and
+        ($badValueJson.applied -eq $false) -and
+        ($badValueJson.error -eq 'invalid_value') -and
+        ($badDeviceJson.ok -eq $false) -and
+        ($badDeviceJson.error -eq 'invalid_request') -and
+        ($wrappedRegJson.ok -eq $false) -and
+        ($wrappedRegJson.error -eq 'reg_out_of_range') -and
+        ($quality -eq 18)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        Details = ('online={0} name={1} pid={2} jpg_bytes={3} capture_before={4} capture_after={5} failures_before={6} failures_after={7} reg_value={8} quality={9} unsafe_write={10} bad_frame={11} bad_value={12} bad_device={13} wrapped_reg={14}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -944,6 +1039,13 @@ try {
     $buildOutput = Invoke-ArduinoCompile -Mode 'build' -Cli $CliPath -Sketch $SketchPath -BoardFqbn $Fqbn -SerialPort $Port -ExtraFlags $extraFlags
     Add-Result 'Build' ($LASTEXITCODE -eq 0) $buildOutput.Trim()
 
+    $portResolution = Resolve-UploadPort -RequestedPort $Port
+    Add-Result 'Serial Port' $portResolution.Passed $portResolution.Details
+    if (-not $portResolution.Passed) {
+        throw $portResolution.Details
+    }
+    $Port = $portResolution.Port
+
     $uploadOutput = Invoke-ArduinoCompile -Mode 'upload' -Cli $CliPath -Sketch $SketchPath -BoardFqbn $Fqbn -SerialPort $Port -ExtraFlags $extraFlags
     Add-Result 'Upload' ($LASTEXITCODE -eq 0) (($uploadOutput -split [Environment]::NewLine | Select-Object -Last 8) -join [Environment]::NewLine)
 
@@ -977,6 +1079,7 @@ try {
         $statusJson.ap3216c.online -and
         $statusJson.qma6100p.online -and
         $statusJson.mic.online -and
+        $statusJson.camera.online -and
         $statusJson.speaker.online -and
         $speakerDiagnosticsOk -and
         $speakerVerificationOk -and
@@ -1002,6 +1105,9 @@ try {
 
     $live = Test-LiveEndpoint -Ip $ip
     Add-Result 'API Live Cadence' $live.Passed $live.Details
+
+    $camera = Test-CameraEndpoint -Ip $ip
+    Add-Result 'Camera Capture And Controls' $camera.Passed $camera.Details
 
     $liveSoak = Test-LiveCadenceSoak -Ip $ip -DurationSeconds 20
     Add-Result 'API Live 2Hz Soak' $liveSoak.Passed $liveSoak.Details
@@ -1045,6 +1151,10 @@ try {
         $htmlText.Contains('保存阈值') -and
         $htmlText.Contains('/api/health') -and
         $htmlText.Contains('/api/live') -and
+        $htmlText.Contains('/api/camera.jpg') -and
+        $htmlText.Contains('/api/camera/control') -and
+        $htmlText.Contains('/api/register') -and
+        $htmlText.Contains('/api/system/control') -and
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('/api/config') -and
@@ -1095,8 +1205,9 @@ $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
-$reportLines += '- Live dashboard exposes sensor telemetry, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
+$reportLines += '- Camera JPEG capture, camera controls and safe hardware register access are verified through HTTP APIs'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'

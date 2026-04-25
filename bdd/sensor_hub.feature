@@ -13,6 +13,7 @@ Feature: ESP32 Sensor Hub Dashboard
     And /api/health should report compact OK health for storage, sensors, speaker, alerts, uptime, heap and persisted samples
     And /api/live should report 500 ms live polling, cached live payloads, and 10000 ms sample and flush cadence
     And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
+    And the MC5640 camera should report online status and serve a JPEG frame to the HTML dashboard
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
@@ -30,6 +31,13 @@ Feature: ESP32 Sensor Hub Dashboard
     When the client requests / and /api/log.csv
     Then the HTML should contain the dashboard shell, a health link, completion-based 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
     And the CSV log should contain persisted sensor samples
+
+  Scenario: Hardware register and camera controls are exposed
+    Given the board HTTP service is online
+    When the verification flow reads an AP3216C register and applies a camera quality setting
+    Then the register API should return a masked value
+    And the camera control API should report the applied setting in /api/camera
+    And unsafe register writes, invalid devices, wrapped 8-bit register addresses, and invalid camera frame sizes should be rejected
 
   Scenario: 2Hz live polling remains stable
     Given the board HTTP service is online

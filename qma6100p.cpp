@@ -96,4 +96,12 @@ bool read(Qma6100pReading *reading) {
   return true;
 }
 
+bool readRegister(uint8_t reg, uint8_t *value) {
+  return readReg(reg, value, 1);
+}
+
+bool writeRegister(uint8_t reg, uint8_t value) {
+  return writeReg(reg, value);
+}
+
 }  // namespace qma6100p
