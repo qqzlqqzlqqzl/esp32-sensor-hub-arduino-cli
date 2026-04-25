@@ -51,6 +51,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 - MC5640 MJPEG stream cadence and JPEG latency checks
 - camera one-click presets, AP3216C mode, QMA6100P range and ES8388 volume preset readback checks
 - dashboard edit-lock checks so 0.5s live polling does not overwrite camera controls while the user is editing
+- executable host-side dashboard JavaScript edit-lock behavior test through `ci/test_dashboard_edit_lock.js`
 - compact health endpoint checks through `/api/health`
 - cached lightweight live endpoint checks through `/api/live`
 - boot readiness telemetry checks through `/api/status`

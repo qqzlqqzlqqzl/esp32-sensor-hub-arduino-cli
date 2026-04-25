@@ -45,6 +45,7 @@ Feature: ESP32 Sensor Hub Dashboard
     Given the board HTTP service is online and the HTML dashboard polls /api/live every 500 ms
     When the user drags a camera slider or changes a camera selector
     Then live polling should not overwrite the edited control value before the user applies it
+    And the dashboard edit-lock JavaScript behavior should pass a host-side executable test
     And one-click camera presets should round-trip through /api/camera/preset
     And AP3216C mode, QMA6100P range, and ES8388 volume presets should round-trip through /api/peripheral/control
     And out-of-range preset values should be rejected with explicit errors

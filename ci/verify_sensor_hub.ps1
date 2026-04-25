@@ -1216,6 +1216,9 @@ try {
     $buildOutput = Invoke-ArduinoCompile -Mode 'build' -Cli $CliPath -Sketch $SketchPath -BoardFqbn $Fqbn -SerialPort $Port -ExtraFlags $extraFlags
     Add-Result 'Build' ($LASTEXITCODE -eq 0) $buildOutput.Trim()
 
+    $dashboardEditLockText = (& node (Join-Path $SketchPath 'ci\test_dashboard_edit_lock.js') 2>&1 | Out-String)
+    Add-Result 'Dashboard Edit Lock Behavior' ($LASTEXITCODE -eq 0 -and $dashboardEditLockText.Contains('DASHBOARD_EDIT_LOCK_BEHAVIOR_PASS')) $dashboardEditLockText.Trim()
+
     $portResolution = Resolve-UploadPort -RequestedPort $Port
     Add-Result 'Serial Port' $portResolution.Passed $portResolution.Details
     if (-not $portResolution.Passed) {
@@ -1411,7 +1414,7 @@ $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
-$reportLines += '- Dashboard controls keep user edits during 0.5s live refresh and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
+$reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
