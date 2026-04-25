@@ -316,22 +316,31 @@ void lcd_init(void)
     xl9555_io_config(SLCD_PWR, IO_SET_OUTPUT);
     xl9555_io_config(SLCD_RST, IO_SET_OUTPUT);
     pinMode(SLCD_WR_PIN, OUTPUT);
+    pinMode(SLCD_CS_PIN, OUTPUT);
 
-    /* LCD屏需要用到的引脚默认状态为高电平 */
-    xl9555_pin_set(SLCD_PWR, IO_SET_HIGH);
-    xl9555_pin_set(SLCD_RST, IO_SET_HIGH);
+    /* 软重启时LCD和XL9555可能保留旧状态，先做一次接近冷启动的断电复位。 */
+    LCD_CS(1);
     digitalWrite(SLCD_WR_PIN, HIGH);
+    xl9555_pin_set(SLCD_RST, IO_SET_LOW);
+    xl9555_pin_set(SLCD_PWR, IO_SET_LOW);
+    delay(120);
+    xl9555_pin_set(SLCD_PWR, IO_SET_HIGH);
+    delay(120);
   
     /* 对SPI进行配置 */
-    spi_lcd = new SPIClass(HSPI);   /* 创建SPIClass实例时选择SPI总线(HSPI) */
+    if (spi_lcd == NULL)
+    {
+        spi_lcd = new SPIClass(HSPI);   /* 创建SPIClass实例时选择SPI总线(HSPI) */
+    }
+    else
+    {
+        spi_lcd->end();
+    }
     spi_lcd->begin(SLCD_SCK_PIN, SLCD_SDI_PIN, SLCD_SDA_PIN, SLCD_CS_PIN);  /* 设置SPI的通信线 */
-    pinMode(SLCD_CS_PIN, OUTPUT);   /* 设置CS引脚为输出模式 */
 
     /* 硬件复位 */
-    LCD_RST(1);
-    delay(10);
     LCD_RST(0);
-    delay(10);
+    delay(100);
     LCD_RST(1);
     delay(120);
 

@@ -782,6 +782,47 @@ function Test-BootTelemetry {
     }
 }
 
+function Test-DisplayRecovery {
+    param(
+        [string]$Ip,
+        [object]$BeforeStatus
+    )
+
+    $beforeDisplay = Get-PropertyValue -Object $BeforeStatus -Name 'display' -Default $null
+    $beforeInitCount = [int](Get-PropertyValue -Object $beforeDisplay -Name 'init_count' -Default 0)
+    $beforeReinitCount = [int](Get-PropertyValue -Object $beforeDisplay -Name 'reinit_count' -Default 0)
+    $reinitText = Invoke-CurlPost ('http://' + $Ip + '/api/display/reinit') -TimeoutSeconds 10
+    $reinitJson = $reinitText | ConvertFrom-Json
+    Start-Sleep -Seconds 1
+    $statusText = Invoke-Curl ('http://' + $Ip + '/api/status') -TimeoutSeconds 8
+    $statusJson = $statusText | ConvertFrom-Json
+    $display = $statusJson.display
+    $initCount = [int](Get-PropertyValue -Object $display -Name 'init_count' -Default 0)
+    $reinitCount = [int](Get-PropertyValue -Object $display -Name 'reinit_count' -Default 0)
+    $lastReinitMs = [int](Get-PropertyValue -Object $display -Name 'last_reinit_ms' -Default 0)
+    $outputPort1 = [int](Get-PropertyValue -Object $display -Name 'xl9555_output_port1' -Default 0)
+    $configPort1 = [int](Get-PropertyValue -Object $display -Name 'xl9555_config_port1' -Default 255)
+    $powerResetHigh = (($outputPort1 -band 12) -eq 12)
+    $powerResetOutput = (($configPort1 -band 12) -eq 0)
+    $ok = ($reinitJson.applied -eq $true) -and
+        ($display.online -eq $true) -and
+        ($display.power_high -eq $true) -and
+        ($display.reset_high -eq $true) -and
+        ($display.pins_output -eq $true) -and
+        ($initCount -ge ($beforeInitCount + 1)) -and
+        ($reinitCount -ge ($beforeReinitCount + 1)) -and
+        ($lastReinitMs -gt 0) -and
+        $powerResetHigh -and
+        $powerResetOutput
+
+    return [pscustomobject]@{
+        Passed = $ok
+        StatusText = $statusText
+        StatusJson = $statusJson
+        Details = ('before_init={0} init={1} before_reinit={2} reinit={3} last_reinit_ms={4} out_p1={5} cfg_p1={6} power_high={7} reset_high={8} pins_output={9} applied={10}' -f $beforeInitCount, $initCount, $beforeReinitCount, $reinitCount, $lastReinitMs, $outputPort1, $configPort1, $display.power_high, $display.reset_high, $display.pins_output, $reinitJson.applied)
+    }
+}
+
 function Wait-UptimeAtLeast {
     param(
         [string]$Ip,
@@ -1054,6 +1095,17 @@ function Test-RebootPersistence {
     $afterPersisted = [int](Get-PropertyValue -Object $afterJson.storage -Name 'persisted_samples' -Default 0)
     $afterTempHigh = [double](Get-PropertyValue -Object $afterJson.config -Name 'temp_high_c' -Default 0)
     $afterUptime = [int](Get-PropertyValue -Object $afterJson.system -Name 'uptime_sec' -Default 999999)
+    $afterDisplay = Get-PropertyValue -Object $afterJson -Name 'display' -Default $null
+    $displayInitCount = [int](Get-PropertyValue -Object $afterDisplay -Name 'init_count' -Default 0)
+    $displayOutputPort1 = [int](Get-PropertyValue -Object $afterDisplay -Name 'xl9555_output_port1' -Default 0)
+    $displayConfigPort1 = [int](Get-PropertyValue -Object $afterDisplay -Name 'xl9555_config_port1' -Default 255)
+    $displayRecoveryOk = ($afterDisplay.online -eq $true) -and
+        ($afterDisplay.power_high -eq $true) -and
+        ($afterDisplay.reset_high -eq $true) -and
+        ($afterDisplay.pins_output -eq $true) -and
+        ($displayInitCount -ge 1) -and
+        (($displayOutputPort1 -band 12) -eq 12) -and
+        (($displayConfigPort1 -band 12) -eq 0)
     $historyText = Invoke-Curl ('http://' + $Ip + '/api/history')
     $historyJson = $historyText | ConvertFrom-Json
     $ok = $afterJson.storage.mount_ok -and
@@ -1061,13 +1113,14 @@ function Test-RebootPersistence {
         ($afterPersisted -ge $beforePersisted) -and
         ([math]::Abs($afterTempHigh - $beforeTempHigh) -lt 0.01) -and
         ($afterUptime -lt $beforeUptime) -and
-        ($historyJson.rows.Count -ge 1)
+        ($historyJson.rows.Count -ge 1) -and
+        $displayRecoveryOk
 
     return [pscustomobject]@{
         Passed = $ok
         StatusText = $after.StatusText
         StatusJson = $afterJson
-        Details = ('before_persisted={0} after_persisted={1} before_uptime={2} after_uptime={3} before_temp_high={4} after_temp_high={5} history_rows={6}' -f $beforePersisted, $afterPersisted, $beforeUptime, $afterUptime, $beforeTempHigh, $afterTempHigh, $historyJson.rows.Count)
+        Details = ('before_persisted={0} after_persisted={1} before_uptime={2} after_uptime={3} before_temp_high={4} after_temp_high={5} history_rows={6} display_init={7} out_p1={8} cfg_p1={9} display_ok={10}' -f $beforePersisted, $afterPersisted, $beforeUptime, $afterUptime, $beforeTempHigh, $afterTempHigh, $historyJson.rows.Count, $displayInitCount, $displayOutputPort1, $displayConfigPort1, $displayRecoveryOk)
     }
 }
 
@@ -1280,6 +1333,13 @@ try {
     $bootTelemetry = Test-BootTelemetry -StatusJson $statusJson
     Add-Result 'Boot Telemetry' $bootTelemetry.Passed $bootTelemetry.Details
 
+    $displayRecovery = Test-DisplayRecovery -Ip $ip -BeforeStatus $statusJson
+    if ($displayRecovery.StatusJson) {
+        $statusText = $displayRecovery.StatusText
+        $statusJson = $displayRecovery.StatusJson
+    }
+    Add-Result 'Display Reinit Recovery' $displayRecovery.Passed $displayRecovery.Details
+
     $health = Test-HealthEndpoint -Ip $ip -StatusJson $statusJson
     Add-Result 'API Health' $health.Passed $health.Details
 
@@ -1412,6 +1472,7 @@ $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
+$reportLines += '- LCD recovery can be triggered without a board power-cycle and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
 $reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified camera/AP3216C/QMA6100P/ES8388 presets'

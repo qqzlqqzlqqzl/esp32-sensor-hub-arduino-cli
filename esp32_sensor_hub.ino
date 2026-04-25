@@ -116,6 +116,21 @@ String gLiveJsonCache;
 unsigned long gLiveJsonCacheMs = 0;
 uint32_t gLiveJsonBuildCount = 0;
 
+struct DisplayRecoveryState {
+  uint32_t initCount = 0;
+  uint32_t reinitCount = 0;
+  uint32_t prepareRestartCount = 0;
+  uint32_t lastInitMs = 0;
+  uint32_t lastReinitMs = 0;
+  uint32_t lastPowerCycleMs = 0;
+  uint8_t outputPort1 = 0xFF;
+  uint8_t configPort1 = 0xFF;
+  bool powerHigh = false;
+  bool resetHigh = false;
+  bool pinsOutput = false;
+  char lastAction[20] = "BOOT";
+} gDisplayRecovery;
+
 struct BootState {
   uint32_t serialReadyMs = 0;
   uint32_t littleFsMountMs = 0;
@@ -1778,6 +1793,29 @@ const char *speakerVerificationState() {
   return gSpeaker.loopbackPassed ? "PASS" : "FAIL";
 }
 
+void refreshDisplayRecoveryIoState() {
+  const uint8_t powerMask = static_cast<uint8_t>(SLCD_PWR >> 8);
+  const uint8_t resetMask = static_cast<uint8_t>(SLCD_RST >> 8);
+  gDisplayRecovery.outputPort1 = xl9555_read_reg(XL9555_OUTPUT_PORT1_REG);
+  gDisplayRecovery.configPort1 = xl9555_read_reg(XL9555_CONFIG_PORT1_REG);
+  gDisplayRecovery.powerHigh = (gDisplayRecovery.outputPort1 & powerMask) != 0;
+  gDisplayRecovery.resetHigh = (gDisplayRecovery.outputPort1 & resetMask) != 0;
+  gDisplayRecovery.pinsOutput = ((gDisplayRecovery.configPort1 & (powerMask | resetMask)) == 0);
+}
+
+void prepareDisplayForRestart() {
+  xl9555_init();
+  xl9555_io_config(SLCD_PWR, IO_SET_OUTPUT);
+  xl9555_io_config(SLCD_RST, IO_SET_OUTPUT);
+  xl9555_pin_set(SLCD_RST, IO_SET_LOW);
+  xl9555_pin_set(SLCD_PWR, IO_SET_LOW);
+  delay(120);
+  gDisplayReady = false;
+  gDisplayRecovery.prepareRestartCount++;
+  snprintf(gDisplayRecovery.lastAction, sizeof(gDisplayRecovery.lastAction), "restart");
+  refreshDisplayRecoveryIoState();
+}
+
 void lcdPrintLine(uint16_t y, lcd_font_t font, uint16_t color, const char *fmt, ...) {
   if (!gDisplayReady) {
     return;
@@ -1792,16 +1830,34 @@ void lcdPrintLine(uint16_t y, lcd_font_t font, uint16_t color, const char *fmt, 
   lcd_show_string(6, y, spilcd_width - 12, 24, font, line, color);
 }
 
-void initDisplay() {
+void initDisplay(bool manualReinit = false) {
   const unsigned long startedAt = millis();
+  gDisplayReady = false;
   xl9555_init();
   lcd_init();
   lcd_display_dir(1);
+  lcd_display_on();
   g_back_color = BLACK;
   lcd_clear(BLACK);
-  gSystem.displayPage = 3;
   gDisplayReady = true;
-  gBoot.displayInitMs = millis() - startedAt;
+  gDisplayRecovery.initCount++;
+  if (manualReinit) {
+    gDisplayRecovery.reinitCount++;
+  }
+  gDisplayRecovery.lastInitMs = millis() - startedAt;
+  gDisplayRecovery.lastPowerCycleMs = gDisplayRecovery.lastInitMs;
+  gDisplayRecovery.lastReinitMs = manualReinit ? gDisplayRecovery.lastInitMs : gDisplayRecovery.lastReinitMs;
+  snprintf(gDisplayRecovery.lastAction, sizeof(gDisplayRecovery.lastAction), "%s", manualReinit ? "manual" : "boot");
+  refreshDisplayRecoveryIoState();
+  gSystem.displayPage = 2;
+  snprintf(gSystem.displayPageName, sizeof(gSystem.displayPageName), "BOOT");
+  lcdPrintLine(6, LCD_FONT_16, CYAN, "ESP32 SENSOR HUB");
+  lcdPrintLine(30, LCD_FONT_16, GREEN, "LCD READY");
+  lcdPrintLine(54, LCD_FONT_12, WHITE, "IP %s", currentDashboardIp().c_str());
+  lcdPrintLine(70, LCD_FONT_12, WHITE, "INIT %lu ms #%lu",
+               static_cast<unsigned long>(gDisplayRecovery.lastInitMs),
+               static_cast<unsigned long>(gDisplayRecovery.initCount));
+  gBoot.displayInitMs = gDisplayRecovery.lastInitMs;
 }
 
 void initCpuTelemetry() {
@@ -2614,6 +2670,41 @@ void appendBootJson(String &json) {
   json += "}";
 }
 
+void appendDisplayJson(String &json) {
+  refreshDisplayRecoveryIoState();
+  json += "\"display\":{\"online\":";
+  json += gDisplayReady ? "true" : "false";
+  json += ",\"page\":";
+  json += String(gSystem.displayPage);
+  json += ",\"page_name\":\"";
+  json += gSystem.displayPageName;
+  json += "\",\"init_count\":";
+  json += String(gDisplayRecovery.initCount);
+  json += ",\"reinit_count\":";
+  json += String(gDisplayRecovery.reinitCount);
+  json += ",\"prepare_restart_count\":";
+  json += String(gDisplayRecovery.prepareRestartCount);
+  json += ",\"last_init_ms\":";
+  json += String(gDisplayRecovery.lastInitMs);
+  json += ",\"last_reinit_ms\":";
+  json += String(gDisplayRecovery.lastReinitMs);
+  json += ",\"last_power_cycle_ms\":";
+  json += String(gDisplayRecovery.lastPowerCycleMs);
+  json += ",\"xl9555_output_port1\":";
+  json += String(gDisplayRecovery.outputPort1);
+  json += ",\"xl9555_config_port1\":";
+  json += String(gDisplayRecovery.configPort1);
+  json += ",\"power_high\":";
+  json += gDisplayRecovery.powerHigh ? "true" : "false";
+  json += ",\"reset_high\":";
+  json += gDisplayRecovery.resetHigh ? "true" : "false";
+  json += ",\"pins_output\":";
+  json += gDisplayRecovery.pinsOutput ? "true" : "false";
+  json += ",\"last_action\":\"";
+  json += gDisplayRecovery.lastAction;
+  json += "\"}";
+}
+
 void appendCameraJson(String &json) {
   const BoardCameraStatus &cam = boardcamera::status();
   json += "\"camera\":{\"online\":";
@@ -2855,13 +2946,8 @@ String statusJson() {
   json += ",\"reset_reason\":\"";
   json += gSystem.resetReason;
   json += "\"},";
-  json += "\"display\":{\"online\":";
-  json += gDisplayReady ? "true" : "false";
-  json += ",\"page\":";
-  json += String(gSystem.displayPage);
-  json += ",\"page_name\":\"";
-  json += gSystem.displayPageName;
-  json += "\"},";
+  appendDisplayJson(json);
+  json += ",";
   json += "\"speaker\":{\"online\":";
   json += gSpeaker.online ? "true" : "false";
   json += ",\"verification_state\":\"";
@@ -3100,13 +3186,9 @@ String liveJson() {
   json += String(gSystem.uptimeSec);
   json += ",\"reset_reason\":\"";
   json += gSystem.resetReason;
-  json += "\"},\"display\":{\"online\":";
-  json += gDisplayReady ? "true" : "false";
-  json += ",\"page\":";
-  json += String(gSystem.displayPage);
-  json += ",\"page_name\":\"";
-  json += gSystem.displayPageName;
-  json += "\"},\"speaker\":{\"online\":";
+  json += "\"},";
+  appendDisplayJson(json);
+  json += ",\"speaker\":{\"online\":";
   json += gSpeaker.online ? "true" : "false";
   json += ",\"verification_state\":\"";
   json += speakerVerificationState();
@@ -4004,6 +4086,21 @@ void handleFlush() {
   server.send(ok ? 200 : 500, "application/json; charset=utf-8", json);
 }
 
+void handleDisplayReinit() {
+  initDisplay(true);
+  gLiveJsonCache = "";
+  gLiveJsonCacheMs = 0;
+  const bool ok = gDisplayReady && gDisplayRecovery.powerHigh && gDisplayRecovery.resetHigh && gDisplayRecovery.pinsOutput;
+  String json;
+  json.reserve(420);
+  json += "{\"applied\":";
+  json += ok ? "true" : "false";
+  json += ",";
+  appendDisplayJson(json);
+  json += "}";
+  server.send(ok ? 200 : 500, "application/json; charset=utf-8", json);
+}
+
 void handleReboot() {
   const bool ok = flushPendingLog();
   if (!ok) {
@@ -4069,6 +4166,7 @@ void setupServer() {
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);
   server.on("/api/config", HTTP_ANY, handleConfig);
   server.on("/api/flush", HTTP_POST, handleFlush);
+  server.on("/api/display/reinit", HTTP_POST, handleDisplayReinit);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
   server.begin();
@@ -4188,7 +4286,9 @@ void loop() {
   server.handleClient();
   if (gRebootRequested) {
     flushPendingLog();
-    delay(250);
+    delay(150);
+    prepareDisplayForRestart();
+    delay(150);
     ESP.restart();
   }
   updateSystemStatsIfDue();
