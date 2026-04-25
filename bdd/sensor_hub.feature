@@ -3,7 +3,7 @@ Feature: ESP32 Sensor Hub Dashboard
 
   Scenario: Firmware builds and uploads with Arduino CLI
     Given the Arduino CLI can compile the sketch for esp32:esp32:esp32s3 with OPI PSRAM enabled
-    When the sketch is uploaded to COM7
+    When the sketch is uploaded through the detected ESP32 serial port
     Then the serial console should report a reachable dashboard URL
 
   Scenario: Live dashboard exposes sensor telemetry

@@ -30,12 +30,12 @@ Requirements:
 
 - Arduino CLI
 - ESP32 core for Arduino
-- Board connected on the expected serial port
+- Board connected on an Arduino CLI detectable serial port
 
 Example:
 
 ```powershell
-& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile -u -p COM7 --fqbn 'esp32:esp32:esp32s3:PSRAM=opi' --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111"' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
+& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile --fqbn 'esp32:esp32:esp32s3:PSRAM=opi' --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111"' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
 ```
 
 ## Verify
@@ -43,6 +43,8 @@ Example:
 ```powershell
 & 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\verify_sensor_hub.ps1' -WifiSsid 'Ziroom402' -WifiPassword '4001001111'
 ```
+
+The verification script uploads through the detected ESP32 serial port by default. When the board is behind SmartUSBHub, discover the hub control port by `VID_1A86 PID_FE0C` and leave the tested channel power and dataline enabled; do not hard-code the hub control COM port or confuse it with the ESP32 CH340 upload port.
 
 The default verification path skips host USB camera checks and focuses on the board sensor hub:
 
