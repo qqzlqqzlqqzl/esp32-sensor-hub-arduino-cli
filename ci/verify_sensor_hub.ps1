@@ -597,6 +597,8 @@ function Test-CameraEndpoint {
         }
     }
 
+    $presetText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/preset?preset=smooth') -TimeoutSeconds 8
+    $presetJson = $presetText | ConvertFrom-Json
     $regText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0&mask=255') -TimeoutSeconds 6
     $regJson = $regText | ConvertFrom-Json
     $controlText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=18') -TimeoutSeconds 6
@@ -642,6 +644,9 @@ function Test-CameraEndpoint {
         ($streamFps -ge 18.0) -and
         ($afterCaptureCount -gt $beforeCaptureCount) -and
         ($afterFailures -eq $beforeFailures) -and
+        ($presetJson.applied -eq $true) -and
+        ($presetJson.verified -eq $true) -and
+        ([int]$presetJson.verified_count -eq [int]$presetJson.control_count) -and
         ($regJson.ok -eq $true) -and
         ($controlJson.applied -eq $true) -and
         ($controlJson.verified -eq $true) -and
@@ -669,7 +674,74 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} reg_value={13} quality={14} quality_verified={15} brightness_verified={16} invalid_quality={17} hex_reg={18} es8388_volume={19} unsafe_write={20} bad_frame={21} bad_value={22} bad_device={23} wrapped_reg={24}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} preset={13}/{14} reg_value={15} quality={16} quality_verified={17} brightness_verified={18} invalid_quality={19} hex_reg={20} es8388_volume={21} unsafe_write={22} bad_frame={23} bad_value={24} bad_device={25} wrapped_reg={26}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $presetJson.verified_count, $presetJson.control_count, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+    }
+}
+
+function Test-PeripheralControls {
+    param([string]$Ip)
+
+    $apModeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=1') -TimeoutSeconds 6
+    $apModeJson = $apModeText | ConvertFrom-Json
+    $apRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=3') -TimeoutSeconds 6
+    $apRestoreJson = $apRestoreText | ConvertFrom-Json
+    $qmaRangeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=4') -TimeoutSeconds 6
+    $qmaRangeJson = $qmaRangeText | ConvertFrom-Json
+    $qmaRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=8') -TimeoutSeconds 6
+    $qmaRestoreJson = $qmaRestoreText | ConvertFrom-Json
+    $speakerText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=speaker_volume&value=16') -TimeoutSeconds 6
+    $speakerJson = $speakerText | ConvertFrom-Json
+    $headphoneText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=headphone_volume&value=17') -TimeoutSeconds 6
+    $headphoneJson = $headphoneText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/speaker_test') -TimeoutSeconds 6 | Out-Null
+    Start-Sleep -Seconds 3
+    $speakerAfterPlaybackText = Invoke-Curl ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255') -TimeoutSeconds 6
+    $speakerAfterPlaybackJson = $speakerAfterPlaybackText | ConvertFrom-Json
+    $speakerRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=speaker_volume&value=26') -TimeoutSeconds 6
+    $speakerRestoreJson = $speakerRestoreText | ConvertFrom-Json
+    $headphoneRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=headphone_volume&value=18') -TimeoutSeconds 6
+    $headphoneRestoreJson = $headphoneRestoreText | ConvertFrom-Json
+    $badApText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=9') -TimeoutSeconds 6
+    $badApJson = $badApText | ConvertFrom-Json
+    $badQmaText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=3') -TimeoutSeconds 6
+    $badQmaJson = $badQmaText | ConvertFrom-Json
+    $badVolumeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=speaker_volume&value=99') -TimeoutSeconds 6
+    $badVolumeJson = $badVolumeText | ConvertFrom-Json
+    Start-Sleep -Milliseconds 500
+    $statusText = Invoke-Curl ('http://' + $Ip + '/api/live') -TimeoutSeconds 8
+    $statusJson = $statusText | ConvertFrom-Json
+
+    $ok = ($apModeJson.applied -eq $true) -and
+        ($apModeJson.verified -eq $true) -and
+        ([int]$apModeJson.effective -eq 1) -and
+        ($apRestoreJson.applied -eq $true) -and
+        ([int]$apRestoreJson.effective -eq 3) -and
+        ($qmaRangeJson.applied -eq $true) -and
+        ([int]$qmaRangeJson.effective -eq 4) -and
+        ($qmaRestoreJson.applied -eq $true) -and
+        ([int]$qmaRestoreJson.effective -eq 8) -and
+        ($speakerJson.applied -eq $true) -and
+        ([int]$speakerJson.effective -eq 16) -and
+        ($headphoneJson.applied -eq $true) -and
+        ([int]$headphoneJson.effective -eq 17) -and
+        ($speakerAfterPlaybackJson.ok -eq $true) -and
+        ([int]$speakerAfterPlaybackJson.value -eq 16) -and
+        ($speakerRestoreJson.applied -eq $true) -and
+        ($headphoneRestoreJson.applied -eq $true) -and
+        ($badApJson.applied -eq $false) -and
+        ($badApJson.error -eq 'out_of_range') -and
+        ($badQmaJson.applied -eq $false) -and
+        ($badQmaJson.error -eq 'out_of_range') -and
+        ($badVolumeJson.applied -eq $false) -and
+        ($badVolumeJson.error -eq 'out_of_range') -and
+        ([int]$statusJson.ap3216c.mode -eq 3) -and
+        ([int]$statusJson.qma6100p.range_g -eq 8) -and
+        ([int]$statusJson.speaker.speaker_volume -eq 26) -and
+        ([int]$statusJson.speaker.headphone_volume -eq 18)
+
+    return [pscustomobject]@{
+        Passed = $ok
+        Details = ('ap_mode={0}->{1} qma_range={2}->{3} speaker={4}->playback_reg{5}->{6} headphone={7}->{8} bad_ap={9} bad_qma={10} bad_volume={11} live_ap={12} live_qma={13} live_spk={14} live_hp={15}' -f $apModeJson.effective, $apRestoreJson.effective, $qmaRangeJson.effective, $qmaRestoreJson.effective, $speakerJson.effective, $speakerAfterPlaybackJson.value, $speakerRestoreJson.effective, $headphoneJson.effective, $headphoneRestoreJson.effective, $badApJson.error, $badQmaJson.error, $badVolumeJson.error, $statusJson.ap3216c.mode, $statusJson.qma6100p.range_g, $statusJson.speaker.speaker_volume, $statusJson.speaker.headphone_volume)
     }
 }
 
@@ -753,6 +825,38 @@ function Test-HtmlCadenceMarkers {
         $HtmlText.Contains('setTimeout(snapshotLoop, SNAPSHOT_POLL_MS)') -and
         (-not $HtmlText.Contains('setInterval(liveLoop')) -and
         (-not $HtmlText.Contains('setInterval(snapshotLoop'))
+}
+
+function Test-DashboardEditLockImplementation {
+    param([string]$HtmlText)
+
+    $requiredMarkers = @(
+        'cameraControlInputKeys',
+        'bindCameraControlEditing',
+        'markCameraControlEditing',
+        'clearCameraControlEditing',
+        'dataset.userEditing',
+        'document.activeElement === input',
+        'updateCameraControlFromStatus(statusEls.camQuality',
+        'updateCameraControlFromStatus(statusEls.camBrightness',
+        'updateCameraControlFromStatus(statusEls.camFrameSize',
+        'clearAllCameraControlEditing',
+        'data-camera-preset',
+        '/api/camera/preset'
+    )
+    $missing = @($requiredMarkers | Where-Object { -not $HtmlText.Contains($_) })
+    $directOverwritePatterns = @(
+        'statusEls.camQuality.value = status.camera.quality',
+        'statusEls.camBrightness.value = status.camera.brightness',
+        'statusEls.camFrameSize.value = status.camera.frame_size_name',
+        'statusEls.camAecValue.value = status.camera.aec_value'
+    )
+    $directOverwrites = @($directOverwritePatterns | Where-Object { $HtmlText.Contains($_) })
+
+    return [pscustomobject]@{
+        Passed = ($missing.Count -eq 0 -and $directOverwrites.Count -eq 0)
+        Details = ('missing={0}; direct_overwrites={1}' -f $(if ($missing.Count) { $missing -join ', ' } else { '(none)' }), $(if ($directOverwrites.Count) { $directOverwrites -join ', ' } else { '(none)' }))
+    }
 }
 
 function Test-LiveCadenceSoak {
@@ -1182,6 +1286,9 @@ try {
     $camera = Test-CameraEndpoint -Ip $ip
     Add-Result 'Camera Capture And Controls' $camera.Passed $camera.Details
 
+    $peripheralControls = Test-PeripheralControls -Ip $ip
+    Add-Result 'Peripheral Preset Controls' $peripheralControls.Passed $peripheralControls.Details
+
     $liveSoak = Test-LiveCadenceSoak -Ip $ip -DurationSeconds 20
     Add-Result 'API Live 2Hz Soak' $liveSoak.Passed $liveSoak.Details
 
@@ -1217,7 +1324,7 @@ try {
     $historyOk = ($historyJson.rows.Count -ge 1) -and ($null -ne $historyJson.rows[0].cpu_usage_pct)
     Add-Result 'API History' $historyOk ('rows=' + $historyJson.rows.Count)
 
-    $htmlText = Invoke-Curl ('http://' + $ip + '/')
+    $htmlText = Invoke-Curl ('http://' + $ip + '/') -TimeoutSeconds 35
     $htmlOk = $htmlText.Contains('ESP32 多传感器看板') -and
         $htmlText.Contains('播报当前温度') -and
         $htmlText.Contains('板载喇叭自检') -and
@@ -1228,7 +1335,9 @@ try {
         $htmlText.Contains('const CAMERA_STREAM_PORT = 81') -and
         $htmlText.Contains('const CAMERA_STREAM_TARGET_FPS = 20') -and
         $htmlText.Contains('/api/camera/control') -and
+        $htmlText.Contains('/api/camera/preset') -and
         $htmlText.Contains('/api/register') -and
+        $htmlText.Contains('/api/peripheral/control') -and
         $htmlText.Contains('/api/system/control') -and
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
@@ -1241,9 +1350,20 @@ try {
         $htmlText.Contains('写入值 0 到 33') -and
         $htmlText.Contains('写入被禁止') -and
         $htmlText.Contains('XL9555 IO 扩展') -and
+        $htmlText.Contains('AP3216C 工作模式') -and
+        $htmlText.Contains('QMA6100P 量程') -and
+        $htmlText.Contains('ES8388 喇叭音量') -and
+        $htmlText.Contains('data-camera-preset') -and
+        $htmlText.Contains('cameraControlInputKeys') -and
+        $htmlText.Contains('bindCameraControlEditing') -and
+        $htmlText.Contains('dataset.userEditing') -and
+        $htmlText.Contains('updateCameraControlFromStatus') -and
         $htmlText.Contains('已生效') -and
         (Test-HtmlCadenceMarkers -HtmlText $htmlText)
     Add-Result 'HTML Dashboard' $htmlOk ('HTML bytes=' + $htmlText.Length)
+
+    $editLock = Test-DashboardEditLockImplementation -HtmlText $htmlText
+    Add-Result 'Dashboard Edit Lock' $editLock.Passed $editLock.Details
 
     $rebootPersistence = Test-RebootPersistence -Ip $ip -BeforeStatus $statusJson
     if ($rebootPersistence.StatusJson) {
@@ -1291,6 +1411,7 @@ $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
+$reportLines += '- Dashboard controls keep user edits during 0.5s live refresh and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'

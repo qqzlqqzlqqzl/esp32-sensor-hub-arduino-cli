@@ -101,6 +101,9 @@ MicLevelReading gMic;
 bool gAp3216Ready = false;
 bool gQmaReady = false;
 bool gMicReady = false;
+uint8_t gAp3216Mode = 3;
+uint8_t gSpeakerVolume = 26;
+uint8_t gHeadphoneVolume = 18;
 bool gLittleFsReady = false;
 bool gLittleFsMountError = false;
 bool gChipTempReady = false;
@@ -550,6 +553,11 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="value sm" id="cameraState">--</div>
         <div class="meta" id="cameraMeta">waiting</div>
         <img id="cameraFrame" class="camera-img" alt="camera">
+        <div class="toolbar">
+          <button class="btn" data-camera-preset="smooth" type="button">流畅 20 帧</button>
+          <button class="btn" data-camera-preset="clear" type="button">清晰画质</button>
+          <button class="btn" data-camera-preset="bright" type="button">弱光增强</button>
+        </div>
         <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option selected>QQVGA</option><option>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
         <div class="control-row"><span>JPEG 质量</span><input id="camQuality" type="range" min="4" max="35" value="30"><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
         <div class="control-row"><span>亮度</span><input id="camBrightness" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
@@ -561,7 +569,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="control-row"><span>手动增益值</span><input id="camAgcGain" type="range" min="0" max="30" value="0"><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
         <div class="control-row"><span>镜像</span><select id="camMirror"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="hmirror" data-cam-input="camMirror" type="button">设</button></div>
         <div class="control-row"><span>翻转</span><select id="camVflip"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="vflip" data-cam-input="camVflip" type="button">设</button></div>
-        <div class="meta">摄像头设置每次写入后都会回读 /api/camera；只有显示“已生效”才算设置成功。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
+        <div class="meta">摄像头设置每次写入后都会回读 /api/camera；只有显示“已生效”才算设置成功。拖动滑条或修改下拉框时，0.5 秒后台刷新不会覆盖正在编辑的值，点“设”或一键预设后才按硬件回读值同步。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
         <table>
           <tbody>
             <tr><th>设置项</th><th>十进制范围</th><th>说明</th></tr>
@@ -586,6 +594,19 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         </div>
         <div class="meta mono" id="regState">寄存器控制台就绪：只接受十进制整数</div>
         <div class="meta">外设寄存器只接受十进制数字，不接受 0x 前缀。默认读操作安全；写操作只开放 ES8388 音量寄存器 46 到 49，其他写入会被拦截。</div>
+        <div class="kv">
+          <div><span>AP3216C 工作模式</span><select id="apModeControl"><option value="0">0 低功耗/暂停</option><option value="1">1 只开环境光</option><option value="2">2 只开接近/红外</option><option value="3" selected>3 全部开启</option></select></div>
+          <div><span>QMA6100P 量程 g</span><select id="qmaRangeControl"><option>2</option><option>4</option><option selected>8</option><option>16</option></select></div>
+          <div><span>ES8388 喇叭音量 0-33</span><input id="speakerVolumeControl" type="number" min="0" max="33" step="1" value="26"></div>
+          <div><span>ES8388 耳机音量 0-33</span><input id="headphoneVolumeControl" type="number" min="0" max="33" step="1" value="18"></div>
+        </div>
+        <div class="toolbar">
+          <button id="apModeBtn" class="btn" type="button">设置 AP3216C</button>
+          <button id="qmaRangeBtn" class="btn" type="button">设置 QMA 量程</button>
+          <button id="speakerVolumeBtn" class="btn" type="button">设置喇叭音量</button>
+          <button id="headphoneVolumeBtn" class="btn" type="button">设置耳机音量</button>
+        </div>
+        <div class="meta mono" id="peripheralState">外设预设就绪：写入后会读取寄存器确认</div>
         <table>
           <tbody>
             <tr><th>设备</th><th>可读地址 十进制</th><th>可写范围 十进制</th><th>怎么设</th></tr>
@@ -680,6 +701,15 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       regState: document.getElementById('regState'),
       regReadBtn: document.getElementById('regReadBtn'),
       regWriteBtn: document.getElementById('regWriteBtn'),
+      apModeControl: document.getElementById('apModeControl'),
+      apModeBtn: document.getElementById('apModeBtn'),
+      qmaRangeControl: document.getElementById('qmaRangeControl'),
+      qmaRangeBtn: document.getElementById('qmaRangeBtn'),
+      speakerVolumeControl: document.getElementById('speakerVolumeControl'),
+      speakerVolumeBtn: document.getElementById('speakerVolumeBtn'),
+      headphoneVolumeControl: document.getElementById('headphoneVolumeControl'),
+      headphoneVolumeBtn: document.getElementById('headphoneVolumeBtn'),
+      peripheralState: document.getElementById('peripheralState'),
       cpuMhzControl: document.getElementById('cpuMhzControl'),
       cpuMhzBtn: document.getElementById('cpuMhzBtn'),
       wifiPowerControl: document.getElementById('wifiPowerControl'),
@@ -878,6 +908,49 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       configInputsDirty = true;
     }));
 
+    const cameraControlInputKeys = [
+      'camFrameSize',
+      'camQuality',
+      'camBrightness',
+      'camContrast',
+      'camSaturation',
+      'camAec',
+      'camAecValue',
+      'camAgc',
+      'camAgcGain',
+      'camMirror',
+      'camVflip',
+    ];
+
+    function markCameraControlEditing(input) {
+      if (input) input.dataset.userEditing = '1';
+    }
+
+    function clearCameraControlEditing(input) {
+      if (input) delete input.dataset.userEditing;
+    }
+
+    function bindCameraControlEditing() {
+      cameraControlInputKeys.forEach(key => {
+        const input = statusEls[key];
+        if (!input) return;
+        ['focus', 'pointerdown', 'input', 'change'].forEach(eventName => {
+          input.addEventListener(eventName, () => markCameraControlEditing(input));
+        });
+      });
+    }
+
+    function updateCameraControlFromStatus(input, value) {
+      if (!input) return;
+      if (input.dataset.userEditing === '1' || document.activeElement === input) return;
+      input.value = value;
+    }
+
+    function clearAllCameraControlEditing() {
+      cameraControlInputKeys.forEach(key => clearCameraControlEditing(statusEls[key]));
+    }
+    bindCameraControlEditing();
+
     const cameraControlLabels = {
       framesize_name: '分辨率',
       framesize: '分辨率',
@@ -903,7 +976,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       return camera[name];
     }
 
-    async function applyCameraControl(name, value) {
+    async function applyCameraControl(name, value, input) {
       const params = new URLSearchParams({ name, value });
       const res = await fetch(`/api/camera/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
       const json = await res.json().catch(() => ({}));
@@ -922,13 +995,28 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.cameraMeta.textContent = verified
         ? `已生效：${cameraControlLabel(name)}=${effective}`
         : `未生效：${cameraControlLabel(name)} 目标=${value} 回读=${effective}`;
+      if (verified) {
+        clearCameraControlEditing(input);
+        if (input) input.value = String(effective);
+      }
+      setTimeout(refreshLive, 300);
+    }
+
+    async function applyCameraPreset(preset) {
+      const params = new URLSearchParams({ preset });
+      const res = await fetch(`/api/camera/preset?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+      const json = await res.json().catch(() => ({}));
+      clearAllCameraControlEditing();
+      statusEls.cameraMeta.textContent = json.applied
+        ? `一键预设已生效：${json.label || preset} / ${json.verified_count}/${json.control_count}`
+        : `一键预设失败：${json.error || res.status}`;
       setTimeout(refreshLive, 300);
     }
 
     document.querySelectorAll('[data-cam]').forEach(button => {
       button.addEventListener('click', () => {
         const input = document.getElementById(button.dataset.camInput);
-        applyCameraControl(button.dataset.cam, input.value).catch(() => {
+        applyCameraControl(button.dataset.cam, input.value, input).catch(() => {
           statusEls.cameraMeta.textContent = 'camera control failed';
         });
       });
@@ -936,8 +1024,15 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     document.querySelectorAll('[data-cam-select]').forEach(button => {
       button.addEventListener('click', () => {
         const input = document.getElementById(button.dataset.camInput);
-        applyCameraControl(button.dataset.camSelect, input.value).catch(() => {
+        applyCameraControl(button.dataset.camSelect, input.value, input).catch(() => {
           statusEls.cameraMeta.textContent = 'camera control failed';
+        });
+      });
+    });
+    document.querySelectorAll('[data-camera-preset]').forEach(button => {
+      button.addEventListener('click', () => {
+        applyCameraPreset(button.dataset.cameraPreset).catch(error => {
+          statusEls.cameraMeta.textContent = `一键预设失败：${error.message}`;
         });
       });
     });
@@ -971,6 +1066,27 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     }));
     statusEls.regWriteBtn.addEventListener('click', () => accessRegister(true).catch(error => {
       statusEls.regState.textContent = error.message;
+    }));
+    async function applyPeripheralControl(device, name, value) {
+      const params = new URLSearchParams({ device, name, value });
+      const res = await fetch(`/api/peripheral/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
+      const json = await res.json().catch(() => ({}));
+      statusEls.peripheralState.textContent = json.applied
+        ? `已生效：${json.device}.${json.name}=${json.effective}`
+        : `未生效：${device}.${name} ${json.error || res.status}`;
+      setTimeout(refreshLive, 300);
+    }
+    statusEls.apModeBtn.addEventListener('click', () => applyPeripheralControl('ap3216c', 'mode', statusEls.apModeControl.value).catch(error => {
+      statusEls.peripheralState.textContent = error.message;
+    }));
+    statusEls.qmaRangeBtn.addEventListener('click', () => applyPeripheralControl('qma6100p', 'range_g', statusEls.qmaRangeControl.value).catch(error => {
+      statusEls.peripheralState.textContent = error.message;
+    }));
+    statusEls.speakerVolumeBtn.addEventListener('click', () => applyPeripheralControl('es8388', 'speaker_volume', statusEls.speakerVolumeControl.value).catch(error => {
+      statusEls.peripheralState.textContent = error.message;
+    }));
+    statusEls.headphoneVolumeBtn.addEventListener('click', () => applyPeripheralControl('es8388', 'headphone_volume', statusEls.headphoneVolumeControl.value).catch(error => {
+      statusEls.peripheralState.textContent = error.message;
     }));
     statusEls.cpuMhzBtn.addEventListener('click', async () => {
       const params = new URLSearchParams({ cpu_mhz: statusEls.cpuMhzControl.value });
@@ -1034,7 +1150,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         : 'N/A';
       statusEls.resetReason.textContent = status.system.reset_reason;
       statusEls.speakerLoopback.textContent = status.speaker.verification_state;
-      statusEls.speakerState.textContent = `amp-off ${fmtNum(status.speaker.muted_dbfs)} / amp-on ${fmtNum(status.speaker.enabled_dbfs)} / delta ${fmtNum(status.speaker.delta_dbfs)} / say ${status.speaker.speak_count}${status.speaker.has_spoken_temp ? ` / last ${status.speaker.last_spoken_temp_c}C` : ''}`;
+      statusEls.speakerState.textContent = `amp-off ${fmtNum(status.speaker.muted_dbfs)} / amp-on ${fmtNum(status.speaker.enabled_dbfs)} / delta ${fmtNum(status.speaker.delta_dbfs)} / spk ${status.speaker.speaker_volume} / hp ${status.speaker.headphone_volume} / say ${status.speaker.speak_count}${status.speaker.has_spoken_temp ? ` / last ${status.speaker.last_spoken_temp_c}C` : ''}`;
       statusEls.speakerState.className = `meta ${status.speaker.verification_state === 'PASS' ? 'ok' : status.speaker.verification_state === 'FAIL' ? 'bad' : ''}`;
       statusEls.alertCount.textContent = status.alerts.count;
       statusEls.alertSummary.textContent = status.alerts.summary;
@@ -1045,17 +1161,27 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         statusEls.cameraState.textContent = status.camera.online ? `${status.camera.name} ${status.camera.frame_size_name}` : 'offline';
         statusEls.cameraState.className = `value sm ${status.camera.online ? 'ok' : 'bad'}`;
         statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / ${fmtNum(status.camera.stream_fps, 1)} fps / stream ${status.camera.stream_clients}`;
-        statusEls.camFrameSize.value = status.camera.frame_size_name;
-        statusEls.camQuality.value = status.camera.quality;
-        statusEls.camBrightness.value = status.camera.brightness;
-        statusEls.camContrast.value = status.camera.contrast;
-        statusEls.camSaturation.value = status.camera.saturation;
-        statusEls.camAec.value = status.camera.aec ? '1' : '0';
-        statusEls.camAecValue.value = status.camera.aec_value;
-        statusEls.camAgc.value = status.camera.agc ? '1' : '0';
-        statusEls.camAgcGain.value = status.camera.agc_gain;
-        statusEls.camMirror.value = status.camera.hmirror ? '1' : '0';
-        statusEls.camVflip.value = status.camera.vflip ? '1' : '0';
+        updateCameraControlFromStatus(statusEls.camFrameSize, status.camera.frame_size_name);
+        updateCameraControlFromStatus(statusEls.camQuality, status.camera.quality);
+        updateCameraControlFromStatus(statusEls.camBrightness, status.camera.brightness);
+        updateCameraControlFromStatus(statusEls.camContrast, status.camera.contrast);
+        updateCameraControlFromStatus(statusEls.camSaturation, status.camera.saturation);
+        updateCameraControlFromStatus(statusEls.camAec, status.camera.aec ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camAecValue, status.camera.aec_value);
+        updateCameraControlFromStatus(statusEls.camAgc, status.camera.agc ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camAgcGain, status.camera.agc_gain);
+        updateCameraControlFromStatus(statusEls.camMirror, status.camera.hmirror ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camVflip, status.camera.vflip ? '1' : '0');
+      }
+      if (status.ap3216c && document.activeElement !== statusEls.apModeControl) {
+        statusEls.apModeControl.value = String(status.ap3216c.mode);
+      }
+      if (status.qma6100p && document.activeElement !== statusEls.qmaRangeControl) {
+        statusEls.qmaRangeControl.value = String(status.qma6100p.range_g);
+      }
+      if (status.speaker) {
+        if (document.activeElement !== statusEls.speakerVolumeControl) statusEls.speakerVolumeControl.value = status.speaker.speaker_volume;
+        if (document.activeElement !== statusEls.headphoneVolumeControl) statusEls.headphoneVolumeControl.value = status.speaker.headphone_volume;
       }
       if (status.config) {
         if (!configInputsDirty) {
@@ -2360,7 +2486,7 @@ bool speakTemperatureOnBoard() {
   gSpeaker.speaking = true;
   bool ok = true;
   for (size_t i = 0; i < count; i++) {
-    if (!es8388codec::playMonoPcm(sequence[i]->samples, sequence[i]->sampleCount, 27)) {
+    if (!es8388codec::playMonoPcm(sequence[i]->samples, sequence[i]->sampleCount, gSpeakerVolume)) {
       ok = false;
       break;
     }
@@ -2385,7 +2511,7 @@ void runSpeakerActionsIfDue() {
   if (gSpeakerTestRequested || (gSpeaker.lastTestMs == 0 && millis() >= kSpeakerSelfTestDelayMs)) {
     gSpeaker.testRunning = true;
     SpeakerLoopbackReading reading;
-    const bool ok = es8388codec::playToneAndMeasure(880, 650, &reading, 28);
+    const bool ok = es8388codec::playToneAndMeasure(880, 650, &reading, gSpeakerVolume);
     gSpeaker.mutedDbfs = reading.mutedDbfs;
     gSpeaker.enabledDbfs = reading.enabledDbfs;
     gSpeaker.deltaDbfs = reading.deltaDbfs;
@@ -2663,9 +2789,13 @@ String statusJson() {
   json += String(gLight.ir);
   json += ",\"ps\":";
   json += String(gLight.ps);
+  json += ",\"mode\":";
+  json += String(gAp3216Mode);
   json += "},";
   json += "\"qma6100p\":{\"online\":";
   json += gAccel.online ? "true" : "false";
+  json += ",\"range_g\":";
+  json += String(qma6100p::currentRangeG());
   json += ",\"ax\":";
   json += String(gAccel.ax, 3);
   json += ",\"ay\":";
@@ -2769,6 +2899,10 @@ String statusJson() {
   json += String(gSpeaker.lastSpokenTempC);
   json += ",\"has_spoken_temp\":";
   json += gSpeaker.hasSpokenTemp ? "true" : "false";
+  json += ",\"speaker_volume\":";
+  json += String(gSpeakerVolume);
+  json += ",\"headphone_volume\":";
+  json += String(gHeadphoneVolume);
   json += ",\"last_test_ms\":";
   json += String(gSpeaker.lastTestMs);
   json += "}";
@@ -2922,8 +3056,12 @@ String liveJson() {
   json += String(gLight.ir);
   json += ",\"ps\":";
   json += String(gLight.ps);
+  json += ",\"mode\":";
+  json += String(gAp3216Mode);
   json += "},\"qma6100p\":{\"online\":";
   json += gAccel.online ? "true" : "false";
+  json += ",\"range_g\":";
+  json += String(qma6100p::currentRangeG());
   json += ",\"ax\":";
   json += String(gAccel.ax, 3);
   json += ",\"ay\":";
@@ -2990,6 +3128,10 @@ String liveJson() {
   json += gSpeaker.hasSpokenTemp ? "true" : "false";
   json += ",\"last_spoken_temp_c\":";
   json += String(gSpeaker.lastSpokenTempC);
+  json += ",\"speaker_volume\":";
+  json += String(gSpeakerVolume);
+  json += ",\"headphone_volume\":";
+  json += String(gHeadphoneVolume);
   json += "},";
   appendCameraJson(json);
   json += ",";
@@ -3053,7 +3195,7 @@ String healthJson() {
 }
 
 void handleRoot() {
-  server.send(200, "text/html; charset=utf-8", FPSTR(kDashboardHtml));
+  server.send_P(200, "text/html; charset=utf-8", kDashboardHtml);
 }
 
 void handleStatus() {
@@ -3357,6 +3499,116 @@ bool cameraEffectiveValue(const BoardCameraStatus &cam, const String &name, int 
   return true;
 }
 
+void handleCameraPreset() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    return;
+  }
+  if (!server.hasArg("preset")) {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
+    return;
+  }
+
+  struct PresetControl {
+    const char *name;
+    int value;
+  };
+
+  static const PresetControl smooth[] = {
+      {"framesize", FRAMESIZE_QQVGA},
+      {"quality", 30},
+      {"brightness", 0},
+      {"contrast", 0},
+      {"saturation", 0},
+      {"aec", 1},
+      {"agc", 1},
+  };
+  static const PresetControl clear[] = {
+      {"framesize", FRAMESIZE_QVGA},
+      {"quality", 18},
+      {"brightness", 0},
+      {"contrast", 1},
+      {"saturation", 0},
+      {"aec", 1},
+      {"agc", 1},
+  };
+  static const PresetControl bright[] = {
+      {"framesize", FRAMESIZE_QQVGA},
+      {"quality", 25},
+      {"brightness", 2},
+      {"contrast", 0},
+      {"saturation", 1},
+      {"aec", 1},
+      {"agc", 1},
+  };
+
+  const String preset = server.arg("preset");
+  const PresetControl *controls = nullptr;
+  size_t controlCount = 0;
+  const char *label = "";
+  if (preset == "smooth") {
+    controls = smooth;
+    controlCount = sizeof(smooth) / sizeof(smooth[0]);
+    label = "流畅 20 帧";
+  } else if (preset == "clear") {
+    controls = clear;
+    controlCount = sizeof(clear) / sizeof(clear[0]);
+    label = "清晰画质";
+  } else if (preset == "bright") {
+    controls = bright;
+    controlCount = sizeof(bright) / sizeof(bright[0]);
+    label = "弱光增强";
+  } else {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_preset\"}");
+    return;
+  }
+
+  size_t appliedCount = 0;
+  for (size_t i = 0; i < controlCount; i++) {
+    const String controlName = controls[i].name;
+    const char *rangeError = "";
+    if (!cameraControlValueAllowed(controlName, controls[i].value, &rangeError) ||
+        !boardcamera::setControl(controlName, controls[i].value)) {
+      String json;
+      json.reserve(160);
+      json += "{\"applied\":false,\"preset\":\"";
+      json += preset;
+      json += "\",\"error\":\"control_failed\",\"control\":\"";
+      json += controlName;
+      json += "\"}";
+      server.send(400, "application/json; charset=utf-8", json);
+      return;
+    }
+    appliedCount++;
+  }
+
+  const BoardCameraStatus &cam = boardcamera::status();
+  size_t verifiedCount = 0;
+  for (size_t i = 0; i < controlCount; i++) {
+    int effective = 0;
+    if (cameraEffectiveValue(cam, controls[i].name, &effective) && effective == controls[i].value) {
+      verifiedCount++;
+    }
+  }
+
+  String json;
+  json.reserve(220);
+  json += "{\"applied\":";
+  json += appliedCount == controlCount ? "true" : "false";
+  json += ",\"preset\":\"";
+  json += preset;
+  json += "\",\"label\":\"";
+  json += label;
+  json += "\",\"control_count\":";
+  json += String(controlCount);
+  json += ",\"verified_count\":";
+  json += String(verifiedCount);
+  json += ",\"verified\":";
+  json += verifiedCount == controlCount ? "true" : "false";
+  json += "}";
+  server.send(verifiedCount == controlCount ? 200 : 207, "application/json; charset=utf-8", json);
+}
+
 void handleCameraControl() {
   if (server.method() != HTTP_POST) {
     server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
@@ -3525,9 +3777,118 @@ bool registerWrite(RegisterDevice device, uint16_t reg, uint8_t mask, uint8_t va
   uint8_t current = 0;
   if (device == RegisterDevice::kEs8388) {
     if (!es8388codec::readRegister(static_cast<uint8_t>(reg), &current)) return false;
-    return es8388codec::writeRegister(static_cast<uint8_t>(reg), static_cast<uint8_t>((current & ~mask) | (value & mask)));
+    const bool ok = es8388codec::writeRegister(static_cast<uint8_t>(reg), static_cast<uint8_t>((current & ~mask) | (value & mask)));
+    if (ok && mask == 255) {
+      if (reg == 46 || reg == 47) gHeadphoneVolume = value;
+      if (reg == 48 || reg == 49) gSpeakerVolume = value;
+    }
+    return ok;
   }
   return false;
+}
+
+void sendPeripheralControlResult(bool ok,
+                                 const char *device,
+                                 const char *name,
+                                 uint32_t requested,
+                                 int effective,
+                                 const char *error = "") {
+  String json;
+  json.reserve(220);
+  json += "{\"applied\":";
+  json += ok ? "true" : "false";
+  json += ",\"device\":\"";
+  json += device;
+  json += "\",\"name\":\"";
+  json += name;
+  json += "\",\"value\":";
+  json += String(requested);
+  json += ",\"effective\":";
+  json += String(effective);
+  json += ",\"verified\":";
+  json += ok && static_cast<int>(requested) == effective ? "true" : "false";
+  if (!ok && error && error[0]) {
+    json += ",\"error\":\"";
+    json += error;
+    json += "\"";
+  }
+  json += "}";
+  server.send(ok ? 200 : 400, "application/json; charset=utf-8", json);
+}
+
+void handlePeripheralControl() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    return;
+  }
+  if (!server.hasArg("device") || !server.hasArg("name") || !server.hasArg("value")) {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
+    return;
+  }
+
+  const String device = server.arg("device");
+  const String name = server.arg("name");
+  uint32_t requested = 0;
+  if (!parseDecimalUnsignedArg("value", 255, &requested)) {
+    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
+    return;
+  }
+
+  if (device == "ap3216c" && name == "mode") {
+    if (requested > 3) {
+      sendPeripheralControlResult(false, "ap3216c", "mode", requested, -1, "out_of_range");
+      return;
+    }
+    const bool writeOk = ap3216c::writeRegister(0, static_cast<uint8_t>(requested));
+    delay(20);
+    uint8_t effective = 255;
+    const bool readOk = ap3216c::readRegister(0, &effective);
+    if (writeOk && readOk) {
+      gAp3216Mode = effective;
+    }
+    sendPeripheralControlResult(writeOk && readOk && effective == requested, "ap3216c", "mode", requested, effective, "write_failed");
+    return;
+  }
+
+  if (device == "qma6100p" && name == "range_g") {
+    if (!(requested == 2 || requested == 4 || requested == 8 || requested == 16)) {
+      sendPeripheralControlResult(false, "qma6100p", "range_g", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setRangeG(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    qma6100p::readRegister(15, &reg);
+    sendPeripheralControlResult(ok && qma6100p::currentRangeG() == requested, "qma6100p", "range_g", requested, qma6100p::currentRangeG(), "write_failed");
+    return;
+  }
+
+  if (device == "es8388" && (name == "speaker_volume" || name == "headphone_volume" || name == "all_volume")) {
+    if (requested > 33) {
+      sendPeripheralControlResult(false, "es8388", name.c_str(), requested, -1, "out_of_range");
+      return;
+    }
+    bool ok = true;
+    if (name == "speaker_volume" || name == "all_volume") {
+      ok = ok && es8388codec::writeRegister(48, static_cast<uint8_t>(requested));
+      ok = ok && es8388codec::writeRegister(49, static_cast<uint8_t>(requested));
+      if (ok) gSpeakerVolume = static_cast<uint8_t>(requested);
+    }
+    if (name == "headphone_volume" || name == "all_volume") {
+      ok = ok && es8388codec::writeRegister(46, static_cast<uint8_t>(requested));
+      ok = ok && es8388codec::writeRegister(47, static_cast<uint8_t>(requested));
+      if (ok) gHeadphoneVolume = static_cast<uint8_t>(requested);
+    }
+    uint8_t left = 0;
+    uint8_t right = 0;
+    const uint8_t readRegLeft = (name == "headphone_volume") ? 46 : 48;
+    const uint8_t readRegRight = (name == "headphone_volume") ? 47 : 49;
+    ok = ok && es8388codec::readRegister(readRegLeft, &left) && es8388codec::readRegister(readRegRight, &right);
+    const int effective = (left == right) ? left : -1;
+    sendPeripheralControlResult(ok && effective == static_cast<int>(requested), "es8388", name.c_str(), requested, effective, "write_failed");
+    return;
+  }
+
+  server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_control\"}");
 }
 
 void handleRegisterAccess() {
@@ -3700,7 +4061,9 @@ void setupServer() {
   server.on("/api/camera", HTTP_GET, handleCameraStatus);
   server.on("/api/camera.jpg", HTTP_GET, handleCameraJpeg);
   server.on("/api/camera/control", HTTP_POST, handleCameraControl);
+  server.on("/api/camera/preset", HTTP_POST, handleCameraPreset);
   server.on("/api/register", HTTP_ANY, handleRegisterAccess);
+  server.on("/api/peripheral/control", HTTP_POST, handlePeripheralControl);
   server.on("/api/system/control", HTTP_POST, handleSystemControl);
   server.on("/api/speaker_test", HTTP_POST, handleSpeakerTest);
   server.on("/api/speak_temperature", HTTP_POST, handleSpeakTemperature);

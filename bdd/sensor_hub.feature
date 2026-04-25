@@ -41,6 +41,14 @@ Feature: ESP32 Sensor Hub Dashboard
     And unsafe register writes, non-decimal register numbers, invalid devices, wrapped 8-bit register addresses, out-of-range camera values, and invalid camera frame sizes should be rejected
     And the camera dashboard should use a dedicated MJPEG stream with a measured 20 FPS target
 
+  Scenario: Dashboard controls remain editable while live polling runs
+    Given the board HTTP service is online and the HTML dashboard polls /api/live every 500 ms
+    When the user drags a camera slider or changes a camera selector
+    Then live polling should not overwrite the edited control value before the user applies it
+    And one-click camera presets should round-trip through /api/camera/preset
+    And AP3216C mode, QMA6100P range, and ES8388 volume presets should round-trip through /api/peripheral/control
+    And out-of-range preset values should be rejected with explicit errors
+
   Scenario: 2Hz live polling remains stable
     Given the board HTTP service is online
     When the verification flow polls /api/live at 2Hz

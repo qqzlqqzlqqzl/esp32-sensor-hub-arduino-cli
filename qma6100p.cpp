@@ -8,6 +8,7 @@ namespace {
 constexpr uint8_t kAddress = 0x12;
 constexpr float kGravity = 9.80665f;
 constexpr float kRadToDeg = 57.295779513f;
+uint8_t gRangeG = 8;
 
 bool writeReg(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(kAddress);
@@ -39,6 +40,36 @@ bool readReg(uint8_t reg, uint8_t *buffer, size_t len) {
 
 namespace qma6100p {
 
+bool setRangeG(uint8_t rangeG) {
+  uint8_t regValue = 0;
+  switch (rangeG) {
+    case 2:
+      regValue = 0x01;
+      break;
+    case 4:
+      regValue = 0x02;
+      break;
+    case 8:
+      regValue = 0x04;
+      break;
+    case 16:
+      regValue = 0x08;
+      break;
+    default:
+      return false;
+  }
+
+  if (!writeReg(0x0F, regValue)) {
+    return false;
+  }
+  gRangeG = rangeG;
+  return true;
+}
+
+uint8_t currentRangeG() {
+  return gRangeG;
+}
+
 bool begin() {
   uint8_t id = 0;
   if (!readReg(0x00, &id, 1)) {
@@ -62,7 +93,7 @@ bool begin() {
   delay(1);
   writeReg(0x5F, 0x00);
   delay(10);
-  writeReg(0x0F, 0x04);
+  setRangeG(8);
   writeReg(0x10, 0x00);
   writeReg(0x11, 0x84);
   writeReg(0x21, 0x03);
@@ -79,10 +110,11 @@ bool read(Qma6100pReading *reading) {
   const int16_t rawX = static_cast<int16_t>((xyz[1] << 8) | xyz[0]);
   const int16_t rawY = static_cast<int16_t>((xyz[3] << 8) | xyz[2]);
   const int16_t rawZ = static_cast<int16_t>((xyz[5] << 8) | xyz[4]);
+  const float lsbPerG = 8192.0f / static_cast<float>(gRangeG);
 
-  reading->ax = static_cast<float>((rawX >> 2) * kGravity) / 1024.0f;
-  reading->ay = static_cast<float>((rawY >> 2) * kGravity) / 1024.0f;
-  reading->az = static_cast<float>((rawZ >> 2) * kGravity) / 1024.0f;
+  reading->ax = static_cast<float>((rawX >> 2) * kGravity) / lsbPerG;
+  reading->ay = static_cast<float>((rawY >> 2) * kGravity) / lsbPerG;
+  reading->az = static_cast<float>((rawZ >> 2) * kGravity) / lsbPerG;
   reading->ag = sqrtf(reading->ax * reading->ax + reading->ay * reading->ay + reading->az * reading->az);
 
   const float normal = reading->ag > 0.001f ? reading->ag : 0.001f;

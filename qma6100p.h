@@ -18,6 +18,8 @@ bool begin();
 bool read(Qma6100pReading *reading);
 bool readRegister(uint8_t reg, uint8_t *value);
 bool writeRegister(uint8_t reg, uint8_t value);
+bool setRangeG(uint8_t rangeG);
+uint8_t currentRangeG();
 }
 
 #endif
