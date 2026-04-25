@@ -573,7 +573,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <img id="cameraFrame" class="camera-img" alt="camera">
         <div class="toolbar">
           <button class="btn" data-camera-preset="smooth" type="button">流畅 20 帧</button>
-          <button class="btn" data-camera-preset="clear" type="button">清晰画质</button>
+          <button class="btn" data-camera-preset="clear" type="button">清晰 QQVGA</button>
           <button class="btn" data-camera-preset="bright" type="button">弱光增强</button>
         </div>
         <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option selected>QQVGA</option><option>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
@@ -591,7 +591,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <table>
           <tbody>
             <tr><th>设置项</th><th>十进制范围</th><th>说明</th></tr>
-            <tr><td>JPEG 质量</td><td>4 到 63</td><td>数字越小画质越高，码流越大；20 帧优先建议 18 到 35。</td></tr>
+            <tr><td>JPEG 质量</td><td>4 到 63</td><td>数字越小画质越高，码流越大；20 帧优先建议 QQVGA 下 18 到 35。</td></tr>
+            <tr><td>分辨率</td><td>QQVGA/QVGA/VGA/SVGA</td><td>当前板载 OV5640 路径下 20 帧优先使用 QQVGA；QVGA 以上可能降到低帧率并触发恢复。</td></tr>
             <tr><td>亮度/对比度/饱和度</td><td>-2 到 2</td><td>写入后回读同值才算生效。</td></tr>
             <tr><td>手动曝光值</td><td>0 到 1200</td><td>自动曝光为 0 时更稳定。</td></tr>
             <tr><td>手动增益值</td><td>0 到 30</td><td>自动增益为 0 时更稳定。</td></tr>
@@ -1191,7 +1192,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       if (status.camera) {
         statusEls.cameraState.textContent = status.camera.online ? `${status.camera.name} ${status.camera.frame_size_name}` : 'offline';
         statusEls.cameraState.className = `value sm ${status.camera.online ? 'ok' : 'bad'}`;
-        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / ${fmtNum(status.camera.stream_fps, 1)} fps / stream ${status.camera.stream_clients}`;
+        statusEls.cameraMeta.textContent = `pid 0x${Number(status.camera.pid).toString(16)} / ${status.camera.last_width}x${status.camera.last_height} / ${status.camera.last_frame_bytes} bytes / cap ${status.camera.capture_count} / fail ${status.camera.capture_failures} / rec ${status.camera.recovery_count || 0} / ${fmtNum(status.camera.stream_fps, 1)} fps / stream ${status.camera.stream_clients}`;
         updateCameraControlFromStatus(statusEls.camFrameSize, status.camera.frame_size_name);
         updateCameraControlFromStatus(statusEls.camQuality, status.camera.quality);
         updateCameraControlFromStatus(statusEls.camBrightness, status.camera.brightness);
@@ -2814,6 +2815,12 @@ void appendCameraJson(String &json) {
   json += String(cam.captureCount);
   json += ",\"capture_failures\":";
   json += String(cam.captureFailures);
+  json += ",\"consecutive_capture_failures\":";
+  json += String(cam.consecutiveCaptureFailures);
+  json += ",\"recovery_count\":";
+  json += String(cam.recoveryCount);
+  json += ",\"last_recovery_ms\":";
+  json += String(cam.lastRecoveryMs);
   json += ",\"last_capture_ms\":";
   json += String(cam.lastCaptureMs);
   json += ",\"last_capture_duration_ms\":";
@@ -3476,6 +3483,7 @@ void handleCameraJpeg() {
 
 void streamCameraClient(WiFiClient &client) {
   client.setNoDelay(true);
+  client.setTimeout(1);
   client.print("HTTP/1.1 200 OK\r\n");
   client.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
   client.print("Cache-Control: no-store, no-cache, must-revalidate\r\n");
@@ -3488,14 +3496,20 @@ void streamCameraClient(WiFiClient &client) {
   uint32_t framesThisClient = 0;
   uint32_t fpsWindowStartedAt = millis();
   uint32_t fpsWindowFrames = 0;
+  uint8_t consecutiveMisses = 0;
 
   while (client.connected()) {
     const uint32_t frameStartedAt = millis();
     camera_fb_t *frame = boardcamera::capture();
     if (!frame) {
+      consecutiveMisses++;
+      if (consecutiveMisses >= 3) {
+        break;
+      }
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
+    consecutiveMisses = 0;
 
     client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\nX-Frame-Number: %lu\r\n\r\n",
                   static_cast<unsigned int>(frame->len),
@@ -3635,11 +3649,11 @@ bool cameraEffectiveValue(const BoardCameraStatus &cam, const String &name, int 
 
 void handleCameraPreset() {
   if (server.method() != HTTP_POST) {
-    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    server.send(405, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
   if (!server.hasArg("preset")) {
-    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
+    server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"missing_arg\"}");
     return;
   }
 
@@ -3658,7 +3672,7 @@ void handleCameraPreset() {
       {"agc", 1},
   };
   static const PresetControl clear[] = {
-      {"framesize", FRAMESIZE_QVGA},
+      {"framesize", FRAMESIZE_QQVGA},
       {"quality", 18},
       {"brightness", 0},
       {"contrast", 1},
@@ -3687,13 +3701,13 @@ void handleCameraPreset() {
   } else if (preset == "clear") {
     controls = clear;
     controlCount = sizeof(clear) / sizeof(clear[0]);
-    label = "清晰画质";
+    label = "清晰 QQVGA";
   } else if (preset == "bright") {
     controls = bright;
     controlCount = sizeof(bright) / sizeof(bright[0]);
     label = "弱光增强";
   } else {
-    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_preset\"}");
+    server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_preset\"}");
     return;
   }
 
@@ -3705,7 +3719,7 @@ void handleCameraPreset() {
         !boardcamera::setControl(controlName, controls[i].value)) {
       String json;
       json.reserve(160);
-      json += "{\"applied\":false,\"preset\":\"";
+      json += "{\"success\":false,\"applied\":false,\"preset\":\"";
       json += preset;
       json += "\",\"error\":\"control_failed\",\"control\":\"";
       json += controlName;
@@ -3727,7 +3741,9 @@ void handleCameraPreset() {
 
   String json;
   json.reserve(220);
-  json += "{\"applied\":";
+  json += "{\"success\":";
+  json += verifiedCount == controlCount ? "true" : "false";
+  json += ",\"applied\":";
   json += appliedCount == controlCount ? "true" : "false";
   json += ",\"preset\":\"";
   json += preset;
@@ -3745,11 +3761,11 @@ void handleCameraPreset() {
 
 void handleCameraControl() {
   if (server.method() != HTTP_POST) {
-    server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
+    server.send(405, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
   if (!server.hasArg("name") || !server.hasArg("value")) {
-    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
+    server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"missing_arg\"}");
     return;
   }
 
@@ -3759,19 +3775,19 @@ void handleCameraControl() {
   if (name == "framesize_name") {
     value = boardcamera::frameSizeFromName(server.arg("value"));
     if (!boardcamera::isSupportedFrameSize(value)) {
-      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_framesize\"}");
+      server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_framesize\"}");
       return;
     }
     name = "framesize";
   } else {
     int32_t parsedValue = 0;
     if (!parseSignedText(server.arg("value"), -10000, 10000, &parsedValue)) {
-      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
+      server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
     value = static_cast<int>(parsedValue);
     if (name == "framesize" && !boardcamera::isSupportedFrameSize(value)) {
-      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_framesize\"}");
+      server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_framesize\"}");
       return;
     }
   }
@@ -3780,7 +3796,7 @@ void handleCameraControl() {
   if (!cameraControlValueAllowed(name, value, &rangeError)) {
     String json;
     json.reserve(120);
-    json += "{\"applied\":false,\"error\":\"";
+    json += "{\"success\":false,\"applied\":false,\"error\":\"";
     json += rangeError;
     json += "\"}";
     server.send(400, "application/json; charset=utf-8", json);
@@ -3789,7 +3805,7 @@ void handleCameraControl() {
 
   const bool ok = boardcamera::setControl(name, value);
   if (!ok) {
-    server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_control\"}");
+    server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_control\"}");
     return;
   }
 
@@ -3799,7 +3815,9 @@ void handleCameraControl() {
   const bool verified = hasEffective && effective == value;
   String json;
   json.reserve(260);
-  json += "{\"applied\":true,\"name\":\"";
+  json += "{\"success\":";
+  json += verified ? "true" : "false";
+  json += ",\"applied\":true,\"name\":\"";
   json += name;
   json += "\",\"requested_name\":\"";
   json += requestedName;

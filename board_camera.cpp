@@ -9,6 +9,8 @@ namespace {
 
 BoardCameraStatus gCamera;
 SemaphoreHandle_t gCameraMutex = nullptr;
+constexpr uint32_t kCaptureRecoveryTimeoutMs = 3500;
+constexpr uint32_t kCaptureRecoveryFailureThreshold = 2;
 
 constexpr int kPinD0 = 4;
 constexpr int kPinD1 = 5;
@@ -67,14 +69,101 @@ void refreshStatusFromSensor() {
   gCamera.colorbar = sensor->status.colorbar;
 }
 
-bool applySetter(int (*setter)(sensor_t *, int), int value) {
-  sensor_t *sensor = esp_camera_sensor_get();
-  if (!sensor || !setter) {
+bool isFrameSizeSupported(int frameSize) {
+  return frameSize == FRAMESIZE_QQVGA ||
+         frameSize == FRAMESIZE_QVGA ||
+         frameSize == FRAMESIZE_VGA ||
+         frameSize == FRAMESIZE_SVGA ||
+         frameSize == FRAMESIZE_XGA;
+}
+
+void fillCameraConfig(camera_config_t *config) {
+  memset(config, 0, sizeof(camera_config_t));
+  config->pin_pwdn = -1;
+  config->pin_reset = -1;
+  config->pin_xclk = -1;
+  config->pin_sccb_sda = kPinSccbSda;
+  config->pin_sccb_scl = kPinSccbScl;
+  config->pin_d7 = kPinD7;
+  config->pin_d6 = kPinD6;
+  config->pin_d5 = kPinD5;
+  config->pin_d4 = kPinD4;
+  config->pin_d3 = kPinD3;
+  config->pin_d2 = kPinD2;
+  config->pin_d1 = kPinD1;
+  config->pin_d0 = kPinD0;
+  config->pin_vsync = kPinVsync;
+  config->pin_href = kPinHref;
+  config->pin_pclk = kPinPclk;
+  config->xclk_freq_hz = 20000000;
+  config->ledc_timer = LEDC_TIMER_1;
+  config->ledc_channel = LEDC_CHANNEL_1;
+  config->pixel_format = PIXFORMAT_JPEG;
+  config->frame_size = FRAMESIZE_QQVGA;
+  config->jpeg_quality = 30;
+  config->fb_count = gCamera.psram ? 3 : 1;
+  config->fb_location = gCamera.psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  config->grab_mode = CAMERA_GRAB_LATEST;
+  config->sccb_i2c_port = 1;
+}
+
+bool initCameraLocked() {
+  gCamera.psram = psramFound();
+  gCamera.externalClock = true;
+  resetModule();
+
+  camera_config_t config;
+  fillCameraConfig(&config);
+  const esp_err_t err = esp_camera_init(&config);
+  gCamera.initError = static_cast<int>(err);
+  if (err != ESP_OK) {
+    gCamera.online = false;
     return false;
   }
-  const bool ok = setter(sensor, value) == 0;
+
+  gCamera.consecutiveCaptureFailures = 0;
   refreshStatusFromSensor();
-  return ok;
+  return gCamera.online;
+}
+
+bool recoverCameraLocked() {
+  esp_camera_deinit();
+  delay(30);
+  gCamera.recoveryCount++;
+  gCamera.lastRecoveryMs = millis();
+  return initCameraLocked();
+}
+
+bool applyControlUnlocked(sensor_t *sensor, const String &name, int value) {
+  if (!sensor) {
+    return false;
+  }
+  if (name == "framesize") return isFrameSizeSupported(value) && sensor->set_framesize && sensor->set_framesize(sensor, static_cast<framesize_t>(value)) == 0;
+  if (name == "quality") return sensor->set_quality && sensor->set_quality(sensor, value) == 0;
+  if (name == "brightness") return sensor->set_brightness && sensor->set_brightness(sensor, value) == 0;
+  if (name == "contrast") return sensor->set_contrast && sensor->set_contrast(sensor, value) == 0;
+  if (name == "saturation") return sensor->set_saturation && sensor->set_saturation(sensor, value) == 0;
+  if (name == "sharpness") return sensor->set_sharpness && sensor->set_sharpness(sensor, value) == 0;
+  if (name == "special_effect") return sensor->set_special_effect && sensor->set_special_effect(sensor, value) == 0;
+  if (name == "wb_mode") return sensor->set_wb_mode && sensor->set_wb_mode(sensor, value) == 0;
+  if (name == "awb") return sensor->set_whitebal && sensor->set_whitebal(sensor, value ? 1 : 0) == 0;
+  if (name == "awb_gain") return sensor->set_awb_gain && sensor->set_awb_gain(sensor, value ? 1 : 0) == 0;
+  if (name == "aec") return sensor->set_exposure_ctrl && sensor->set_exposure_ctrl(sensor, value ? 1 : 0) == 0;
+  if (name == "aec2") return sensor->set_aec2 && sensor->set_aec2(sensor, value ? 1 : 0) == 0;
+  if (name == "ae_level") return sensor->set_ae_level && sensor->set_ae_level(sensor, value) == 0;
+  if (name == "aec_value") return sensor->set_aec_value && sensor->set_aec_value(sensor, value) == 0;
+  if (name == "agc") return sensor->set_gain_ctrl && sensor->set_gain_ctrl(sensor, value ? 1 : 0) == 0;
+  if (name == "agc_gain") return sensor->set_agc_gain && sensor->set_agc_gain(sensor, value) == 0;
+  if (name == "gainceiling") return sensor->set_gainceiling && sensor->set_gainceiling(sensor, static_cast<gainceiling_t>(value)) == 0;
+  if (name == "hmirror") return sensor->set_hmirror && sensor->set_hmirror(sensor, value ? 1 : 0) == 0;
+  if (name == "vflip") return sensor->set_vflip && sensor->set_vflip(sensor, value ? 1 : 0) == 0;
+  if (name == "colorbar") return sensor->set_colorbar && sensor->set_colorbar(sensor, value ? 1 : 0) == 0;
+  if (name == "dcw") return sensor->set_dcw && sensor->set_dcw(sensor, value ? 1 : 0) == 0;
+  if (name == "bpc") return sensor->set_bpc && sensor->set_bpc(sensor, value ? 1 : 0) == 0;
+  if (name == "wpc") return sensor->set_wpc && sensor->set_wpc(sensor, value ? 1 : 0) == 0;
+  if (name == "raw_gma") return sensor->set_raw_gma && sensor->set_raw_gma(sensor, value ? 1 : 0) == 0;
+  if (name == "lenc") return sensor->set_lenc && sensor->set_lenc(sensor, value ? 1 : 0) == 0;
+  return false;
 }
 
 bool lockCamera(TickType_t timeoutTicks) {
@@ -99,50 +188,15 @@ bool begin() {
     return true;
   }
 
-  gCamera.psram = psramFound();
-  gCamera.externalClock = true;
   if (!gCameraMutex) {
     gCameraMutex = xSemaphoreCreateMutex();
   }
-  resetModule();
-
-  camera_config_t config = {};
-  config.pin_pwdn = -1;
-  config.pin_reset = -1;
-  config.pin_xclk = -1;
-  config.pin_sccb_sda = kPinSccbSda;
-  config.pin_sccb_scl = kPinSccbScl;
-  config.pin_d7 = kPinD7;
-  config.pin_d6 = kPinD6;
-  config.pin_d5 = kPinD5;
-  config.pin_d4 = kPinD4;
-  config.pin_d3 = kPinD3;
-  config.pin_d2 = kPinD2;
-  config.pin_d1 = kPinD1;
-  config.pin_d0 = kPinD0;
-  config.pin_vsync = kPinVsync;
-  config.pin_href = kPinHref;
-  config.pin_pclk = kPinPclk;
-  config.xclk_freq_hz = 20000000;
-  config.ledc_timer = LEDC_TIMER_1;
-  config.ledc_channel = LEDC_CHANNEL_1;
-  config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QQVGA;
-  config.jpeg_quality = 30;
-  config.fb_count = 2;
-  config.fb_location = gCamera.psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
-  config.grab_mode = CAMERA_GRAB_LATEST;
-  config.sccb_i2c_port = 1;
-
-  const esp_err_t err = esp_camera_init(&config);
-  gCamera.initError = static_cast<int>(err);
-  if (err != ESP_OK) {
-    gCamera.online = false;
+  if (!lockCamera(pdMS_TO_TICKS(1000))) {
     return false;
   }
-
-  refreshStatusFromSensor();
-  return gCamera.online;
+  const bool ok = initCameraLocked();
+  unlockCamera();
+  return ok;
 }
 
 bool isReady() {
@@ -172,10 +226,16 @@ camera_fb_t *capture() {
   gCamera.lastCaptureDurationMs = millis() - startedAt;
   if (!frame) {
     gCamera.captureFailures++;
+    gCamera.consecutiveCaptureFailures++;
+    if (gCamera.consecutiveCaptureFailures >= kCaptureRecoveryFailureThreshold ||
+        gCamera.lastCaptureDurationMs >= kCaptureRecoveryTimeoutMs) {
+      recoverCameraLocked();
+    }
     unlockCamera();
     return nullptr;
   }
 
+  gCamera.consecutiveCaptureFailures = 0;
   gCamera.captureCount++;
   gCamera.lastCaptureMs = millis();
   gCamera.lastFrameBytes = frame->len;
@@ -197,61 +257,19 @@ bool setControl(const String &name, int value) {
   }
   sensor_t *sensor = esp_camera_sensor_get();
   if (!sensor) {
-    unlockCamera();
-    return false;
+    recoverCameraLocked();
+    sensor = esp_camera_sensor_get();
+    if (!sensor) {
+      unlockCamera();
+      return false;
+    }
   }
 
-  bool ok = false;
-  if (name == "framesize") {
-    ok = isSupportedFrameSize(value) && sensor->set_framesize && sensor->set_framesize(sensor, static_cast<framesize_t>(value)) == 0;
-  } else if (name == "quality") {
-    ok = sensor->set_quality && sensor->set_quality(sensor, value) == 0;
-  } else if (name == "brightness") {
-    ok = applySetter(sensor->set_brightness, value);
-  } else if (name == "contrast") {
-    ok = applySetter(sensor->set_contrast, value);
-  } else if (name == "saturation") {
-    ok = applySetter(sensor->set_saturation, value);
-  } else if (name == "sharpness") {
-    ok = applySetter(sensor->set_sharpness, value);
-  } else if (name == "special_effect") {
-    ok = applySetter(sensor->set_special_effect, value);
-  } else if (name == "wb_mode") {
-    ok = applySetter(sensor->set_wb_mode, value);
-  } else if (name == "awb") {
-    ok = applySetter(sensor->set_whitebal, value ? 1 : 0);
-  } else if (name == "awb_gain") {
-    ok = applySetter(sensor->set_awb_gain, value ? 1 : 0);
-  } else if (name == "aec") {
-    ok = applySetter(sensor->set_exposure_ctrl, value ? 1 : 0);
-  } else if (name == "aec2") {
-    ok = applySetter(sensor->set_aec2, value ? 1 : 0);
-  } else if (name == "ae_level") {
-    ok = applySetter(sensor->set_ae_level, value);
-  } else if (name == "aec_value") {
-    ok = applySetter(sensor->set_aec_value, value);
-  } else if (name == "agc") {
-    ok = applySetter(sensor->set_gain_ctrl, value ? 1 : 0);
-  } else if (name == "agc_gain") {
-    ok = applySetter(sensor->set_agc_gain, value);
-  } else if (name == "gainceiling") {
-    ok = sensor->set_gainceiling && sensor->set_gainceiling(sensor, static_cast<gainceiling_t>(value)) == 0;
-  } else if (name == "hmirror") {
-    ok = applySetter(sensor->set_hmirror, value ? 1 : 0);
-  } else if (name == "vflip") {
-    ok = applySetter(sensor->set_vflip, value ? 1 : 0);
-  } else if (name == "colorbar") {
-    ok = applySetter(sensor->set_colorbar, value ? 1 : 0);
-  } else if (name == "dcw") {
-    ok = applySetter(sensor->set_dcw, value ? 1 : 0);
-  } else if (name == "bpc") {
-    ok = applySetter(sensor->set_bpc, value ? 1 : 0);
-  } else if (name == "wpc") {
-    ok = applySetter(sensor->set_wpc, value ? 1 : 0);
-  } else if (name == "raw_gma") {
-    ok = applySetter(sensor->set_raw_gma, value ? 1 : 0);
-  } else if (name == "lenc") {
-    ok = applySetter(sensor->set_lenc, value ? 1 : 0);
+  bool ok = applyControlUnlocked(sensor, name, value);
+  if (!ok) {
+    recoverCameraLocked();
+    sensor = esp_camera_sensor_get();
+    ok = applyControlUnlocked(sensor, name, value);
   }
 
   refreshStatusFromSensor();
@@ -315,11 +333,7 @@ int frameSizeFromName(const String &name) {
 }
 
 bool isSupportedFrameSize(int frameSize) {
-  return frameSize == FRAMESIZE_QQVGA ||
-         frameSize == FRAMESIZE_QVGA ||
-         frameSize == FRAMESIZE_VGA ||
-         frameSize == FRAMESIZE_SVGA ||
-         frameSize == FRAMESIZE_XGA;
+  return isFrameSizeSupported(frameSize);
 }
 
 }  // namespace boardcamera

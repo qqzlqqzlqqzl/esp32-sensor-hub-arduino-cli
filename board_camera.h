@@ -33,6 +33,9 @@ struct BoardCameraStatus {
   int colorbar = 0;
   uint32_t captureCount = 0;
   uint32_t captureFailures = 0;
+  uint32_t consecutiveCaptureFailures = 0;
+  uint32_t recoveryCount = 0;
+  uint32_t lastRecoveryMs = 0;
   uint32_t lastCaptureMs = 0;
   uint32_t lastCaptureDurationMs = 0;
   uint32_t lastFrameBytes = 0;

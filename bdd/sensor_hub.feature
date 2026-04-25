@@ -38,6 +38,8 @@ Feature: ESP32 Sensor Hub Dashboard
     When the verification flow reads an AP3216C register and applies camera quality and brightness settings
     Then the register API should return a masked value
     And the camera control API should report effective values that round-trip through /api/camera
+    And the camera control API should return success=true only when the hardware readback verifies the setting
+    And the camera status should expose capture recovery counters so stalled frame capture is visible
     And register controls should use Chinese decimal guidance and safe write ranges
     And unsafe register writes, non-decimal register numbers, invalid devices, wrapped 8-bit register addresses, out-of-range camera values, and invalid camera frame sizes should be rejected
     And the camera dashboard should use a dedicated MJPEG stream with a measured 20 FPS target

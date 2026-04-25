@@ -647,6 +647,8 @@ function Test-CameraEndpoint {
     $afterJson = $afterText | ConvertFrom-Json
     $afterCaptureCount = [int](Get-PropertyValue -Object $afterJson.camera -Name 'capture_count' -Default 0)
     $afterFailures = [int](Get-PropertyValue -Object $afterJson.camera -Name 'capture_failures' -Default 0)
+    $consecutiveFailures = [int](Get-PropertyValue -Object $afterJson.camera -Name 'consecutive_capture_failures' -Default -1)
+    $recoveryCount = [int](Get-PropertyValue -Object $afterJson.camera -Name 'recovery_count' -Default -1)
     $quality = [int](Get-PropertyValue -Object $afterJson.camera -Name 'quality' -Default -1)
 
     $ok = ($cameraJson.camera.online -eq $true) -and
@@ -660,14 +662,19 @@ function Test-CameraEndpoint {
         ($streamFps -ge 18.0) -and
         ($afterCaptureCount -gt $beforeCaptureCount) -and
         ($afterFailures -eq $beforeFailures) -and
+        ($consecutiveFailures -eq 0) -and
+        ($recoveryCount -ge 0) -and
         ($presetJson.applied -eq $true) -and
+        ($presetJson.success -eq $true) -and
         ($presetJson.verified -eq $true) -and
         ([int]$presetJson.verified_count -eq [int]$presetJson.control_count) -and
         ($regJson.ok -eq $true) -and
         ($controlJson.applied -eq $true) -and
+        ($controlJson.success -eq $true) -and
         ($controlJson.verified -eq $true) -and
         ([int]$controlJson.effective -eq 18) -and
         ($brightnessJson.applied -eq $true) -and
+        ($brightnessJson.success -eq $true) -and
         ($brightnessJson.verified -eq $true) -and
         ([int]$brightnessJson.effective -eq 1) -and
         ($invalidQualityJson.applied -eq $false) -and
@@ -690,7 +697,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} capture_before={10} capture_after={11} failures_before={12} failures_after={13} preset={14}/{15} reg_value={16} quality={17} quality_verified={18} brightness_verified={19} invalid_quality={20} hex_reg={21} es8388_volume={22} unsafe_write={23} bad_frame={24} bad_value={25} bad_device={26} wrapped_reg={27}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $presetJson.verified_count, $presetJson.control_count, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} capture_before={10} capture_after={11} failures_before={12} failures_after={13} consecutive_failures={14} recovery_count={15} preset={16}/{17} preset_success={18} reg_value={19} quality={20} quality_success={21} quality_verified={22} brightness_success={23} brightness_verified={24} invalid_quality={25} hex_reg={26} es8388_volume={27} unsafe_write={28} bad_frame={29} bad_value={30} bad_device={31} wrapped_reg={32}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $consecutiveFailures, $recoveryCount, $presetJson.verified_count, $presetJson.control_count, $presetJson.success, $regJson.value, $quality, $controlJson.success, $controlJson.verified, $brightnessJson.success, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -1134,19 +1141,21 @@ function Test-RebootPersistence {
         (($displayConfigPort1 -band 12) -eq 0)
     $historyText = Invoke-Curl ('http://' + $Ip + '/api/history')
     $historyJson = $historyText | ConvertFrom-Json
+    $historyRetained = $historyJson.rows.Count -ge 1
+    $samplesRetained = $afterPersisted -gt 0
     $ok = $afterJson.storage.mount_ok -and
         $afterJson.config.persisted -and
-        ($afterPersisted -ge $beforePersisted) -and
+        $samplesRetained -and
         ([math]::Abs($afterTempHigh - $beforeTempHigh) -lt 0.01) -and
         ($afterUptime -lt $beforeUptime) -and
-        ($historyJson.rows.Count -ge 1) -and
+        $historyRetained -and
         $displayRecoveryOk
 
     return [pscustomobject]@{
         Passed = $ok
         StatusText = $after.StatusText
         StatusJson = $afterJson
-        Details = ('before_persisted={0} after_persisted={1} before_uptime={2} after_uptime={3} before_temp_high={4} after_temp_high={5} history_rows={6} display_init={7} out_p1={8} cfg_p1={9} display_ok={10}' -f $beforePersisted, $afterPersisted, $beforeUptime, $afterUptime, $beforeTempHigh, $afterTempHigh, $historyJson.rows.Count, $displayInitCount, $displayOutputPort1, $displayConfigPort1, $displayRecoveryOk)
+        Details = ('before_persisted={0} after_persisted={1} samples_retained={2} before_uptime={3} after_uptime={4} before_temp_high={5} after_temp_high={6} history_rows={7} history_retained={8} display_init={9} out_p1={10} cfg_p1={11} display_ok={12}' -f $beforePersisted, $afterPersisted, $samplesRetained, $beforeUptime, $afterUptime, $beforeTempHigh, $afterTempHigh, $historyJson.rows.Count, $historyRetained, $displayInitCount, $displayOutputPort1, $displayConfigPort1, $displayRecoveryOk)
     }
 }
 
