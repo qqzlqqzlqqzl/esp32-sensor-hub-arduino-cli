@@ -59,6 +59,18 @@ The default verification path skips host USB camera checks and focuses on the bo
 
 Pass `-IncludeCamera` only when host USB camera artifacts are part of the current acceptance target.
 
+## 外设寄存器设置
+
+Dashboard 的硬件控制台只接受十进制整数。寄存器地址范围和写入策略如下：
+
+- AP3216C：地址 0 到 255 只读；常用地址 0 读系统模式，10 到 15 读红外、环境光和接近数据。
+- ES8388：地址 0 到 255 可读；只允许写音量寄存器 46 到 49，写入值 0 到 33，掩码通常填 255。
+- QMA6100P：地址 0 到 255 只读；常用地址 0 读芯片标识，1 到 6 读加速度原始数据。
+- XL9555：地址 0 到 7 只读；写入会影响屏幕、摄像头复位或电源控制，因此被固件拦截。
+- OV5640：地址 0 到 65535 只读诊断；亮度、曝光、增益和镜像使用摄像头设置区。
+
+摄像头设置写入后会回读 `/api/camera`，只有 `verified=true` 或页面显示“已生效”才算设置真正生效。
+
 ## Issue Workflow
 
 - Bugs and feature work should start from a GitHub issue.

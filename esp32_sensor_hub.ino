@@ -555,23 +555,47 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="control-row"><span>亮度</span><input id="camBrightness" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
         <div class="control-row"><span>对比度</span><input id="camContrast" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="contrast" data-cam-input="camContrast" type="button">设</button></div>
         <div class="control-row"><span>饱和度</span><input id="camSaturation" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="saturation" data-cam-input="camSaturation" type="button">设</button></div>
-        <div class="control-row"><span>曝光</span><input id="camAecValue" type="range" min="0" max="1200" value="300"><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
-        <div class="control-row"><span>增益</span><input id="camAgcGain" type="range" min="0" max="30" value="0"><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
+        <div class="control-row"><span>自动曝光</span><select id="camAec"><option value="1">开</option><option value="0">关</option></select><button class="btn" data-cam-select="aec" data-cam-input="camAec" type="button">设</button></div>
+        <div class="control-row"><span>手动曝光值</span><input id="camAecValue" type="range" min="0" max="1200" value="300"><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
+        <div class="control-row"><span>自动增益</span><select id="camAgc"><option value="1">开</option><option value="0">关</option></select><button class="btn" data-cam-select="agc" data-cam-input="camAgc" type="button">设</button></div>
+        <div class="control-row"><span>手动增益值</span><input id="camAgcGain" type="range" min="0" max="30" value="0"><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
         <div class="control-row"><span>镜像</span><select id="camMirror"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="hmirror" data-cam-input="camMirror" type="button">设</button></div>
+        <div class="control-row"><span>翻转</span><select id="camVflip"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="vflip" data-cam-input="camVflip" type="button">设</button></div>
+        <div class="meta">摄像头设置每次写入后都会回读 /api/camera；只有显示“已生效”才算设置成功。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
+        <table>
+          <tbody>
+            <tr><th>设置项</th><th>十进制范围</th><th>说明</th></tr>
+            <tr><td>JPEG 质量</td><td>4 到 63</td><td>数字越小画质越高，码流越大；20 帧优先建议 18 到 35。</td></tr>
+            <tr><td>亮度/对比度/饱和度</td><td>-2 到 2</td><td>写入后回读同值才算生效。</td></tr>
+            <tr><td>手动曝光值</td><td>0 到 1200</td><td>自动曝光为 0 时更稳定。</td></tr>
+            <tr><td>手动增益值</td><td>0 到 30</td><td>自动增益为 0 时更稳定。</td></tr>
+          </tbody>
+        </table>
       </section>
       <section class="card span-6">
         <div class="label">硬件控制台</div>
         <div class="kv">
           <div><span>设备</span><select id="regDevice"><option value="ap3216c">AP3216C</option><option value="es8388">ES8388</option><option value="qma6100p">QMA6100P</option><option value="xl9555">XL9555</option><option value="ov5640">OV5640</option></select></div>
-          <div><span>寄存器</span><input id="regAddr" value="0x00"></div>
-          <div><span>Mask</span><input id="regMask" value="0xff"></div>
-          <div><span>Value</span><input id="regValue" value="0x00"></div>
+          <div><span>寄存器地址 十进制</span><input id="regAddr" type="number" min="0" max="65535" step="1" value="0"></div>
+          <div><span>掩码 十进制 0-255</span><input id="regMask" type="number" min="0" max="255" step="1" value="255"></div>
+          <div><span>写入值 十进制 0-255</span><input id="regValue" type="number" min="0" max="255" step="1" value="0"></div>
         </div>
         <div class="toolbar">
           <button id="regReadBtn" class="btn" type="button">读寄存器</button>
           <button id="regWriteBtn" class="btn" type="button">写寄存器</button>
         </div>
-        <div class="meta mono" id="regState">register console ready</div>
+        <div class="meta mono" id="regState">寄存器控制台就绪：只接受十进制整数</div>
+        <div class="meta">外设寄存器只接受十进制数字，不接受 0x 前缀。默认读操作安全；写操作只开放 ES8388 音量寄存器 46 到 49，其他写入会被拦截。</div>
+        <table>
+          <tbody>
+            <tr><th>设备</th><th>可读地址 十进制</th><th>可写范围 十进制</th><th>怎么设</th></tr>
+            <tr><td>AP3216C 光照</td><td>0 到 255，常用 0 和 10 到 15</td><td>只读</td><td>地址 0 读系统模式；地址 10 到 15 读红外、环境光、接近数据。写入被禁止。</td></tr>
+            <tr><td>ES8388 音频</td><td>0 到 255</td><td>寄存器 46 到 49，写入值 0 到 33</td><td>46 左耳机音量，47 右耳机音量，48 左喇叭/输出音量，49 右喇叭/输出音量；掩码通常填 255。</td></tr>
+            <tr><td>QMA6100P 姿态</td><td>0 到 255，常用 0 到 6</td><td>只读</td><td>地址 0 读芯片标识；地址 1 到 6 读加速度原始数据。写入被禁止。</td></tr>
+            <tr><td>XL9555 IO 扩展</td><td>0 到 7</td><td>只读</td><td>这里连接屏幕、摄像头复位和电源控制，避免误操作导致外设掉线，所以写入被禁止。</td></tr>
+            <tr><td>OV5640 摄像头</td><td>0 到 65535</td><td>只读诊断</td><td>寄存器只用于诊断读取；亮度、曝光、增益、镜像请使用上面的摄像头设置。</td></tr>
+          </tbody>
+        </table>
         <div class="control-row"><span>CPU MHz</span><select id="cpuMhzControl"><option>80</option><option>160</option><option selected>240</option></select><button id="cpuMhzBtn" class="btn" type="button">设</button></div>
         <div class="control-row"><span>WiFi Tx</span><select id="wifiPowerControl"><option value="-4">-1dBm</option><option value="8">2dBm</option><option value="20">5dBm</option><option value="28">7dBm</option><option value="34">8.5dBm</option><option value="44">11dBm</option><option value="52">13dBm</option><option value="60">15dBm</option><option value="68">17dBm</option><option value="78">19.5dBm</option></select><button id="wifiPowerBtn" class="btn" type="button">设</button></div>
       </section>
@@ -643,9 +667,12 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       camBrightness: document.getElementById('camBrightness'),
       camContrast: document.getElementById('camContrast'),
       camSaturation: document.getElementById('camSaturation'),
+      camAec: document.getElementById('camAec'),
       camAecValue: document.getElementById('camAecValue'),
+      camAgc: document.getElementById('camAgc'),
       camAgcGain: document.getElementById('camAgcGain'),
       camMirror: document.getElementById('camMirror'),
+      camVflip: document.getElementById('camVflip'),
       regDevice: document.getElementById('regDevice'),
       regAddr: document.getElementById('regAddr'),
       regMask: document.getElementById('regMask'),
@@ -851,10 +878,50 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       configInputsDirty = true;
     }));
 
+    const cameraControlLabels = {
+      framesize_name: '分辨率',
+      framesize: '分辨率',
+      quality: 'JPEG 质量',
+      brightness: '亮度',
+      contrast: '对比度',
+      saturation: '饱和度',
+      aec: '自动曝光',
+      aec_value: '手动曝光值',
+      agc: '自动增益',
+      agc_gain: '手动增益值',
+      hmirror: '镜像',
+      vflip: '翻转',
+    };
+
+    function cameraControlLabel(name) {
+      return cameraControlLabels[name] || name;
+    }
+
+    function getCameraEffectiveValue(camera, name) {
+      if (!camera) return undefined;
+      if (name === 'framesize_name' || name === 'framesize') return camera.frame_size_name;
+      return camera[name];
+    }
+
     async function applyCameraControl(name, value) {
       const params = new URLSearchParams({ name, value });
       const res = await fetch(`/api/camera/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
-      statusEls.cameraMeta.textContent = res.ok ? `${name} applied` : `${name} rejected`;
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.applied !== true) {
+        statusEls.cameraMeta.textContent = `未生效：${cameraControlLabel(name)} ${json.error || res.status}`;
+        setTimeout(refreshLive, 300);
+        return;
+      }
+
+      const status = await fetch('/api/camera', { cache: 'no-store' }).then(r => r.json());
+      const canonicalName = json.name || name;
+      const effective = getCameraEffectiveValue(status.camera, canonicalName);
+      const expected = (canonicalName === 'framesize' || canonicalName === 'framesize_name') ? String(value) : Number(value);
+      const actual = (canonicalName === 'framesize' || canonicalName === 'framesize_name') ? String(effective) : Number(effective);
+      const verified = json.verified === true && actual === expected;
+      statusEls.cameraMeta.textContent = verified
+        ? `已生效：${cameraControlLabel(name)}=${effective}`
+        : `未生效：${cameraControlLabel(name)} 目标=${value} 回读=${effective}`;
       setTimeout(refreshLive, 300);
     }
 
@@ -875,17 +942,29 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       });
     });
 
+    function readDecimalInput(input, min, max, label) {
+      const raw = String(input.value || '').trim();
+      if (!/^[0-9]+$/.test(raw)) {
+        throw new Error(`${label} 只接受十进制整数`);
+      }
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        throw new Error(`${label} 范围是 ${min} 到 ${max}`);
+      }
+      return String(value);
+    }
+
     async function accessRegister(write) {
       const params = new URLSearchParams({
         device: statusEls.regDevice.value,
-        reg: statusEls.regAddr.value,
-        mask: statusEls.regMask.value,
+        reg: readDecimalInput(statusEls.regAddr, 0, 65535, '寄存器地址'),
+        mask: readDecimalInput(statusEls.regMask, 0, 255, '掩码'),
       });
-      if (write) params.set('value', statusEls.regValue.value);
+      if (write) params.set('value', readDecimalInput(statusEls.regValue, 0, 255, '写入值'));
       const res = await fetch(`/api/register?${params.toString()}`, { method: write ? 'POST' : 'GET', cache: 'no-store' });
       const json = await res.json();
-      if (json.ok) statusEls.regValue.value = `0x${Number(json.value).toString(16)}`;
-      statusEls.regState.textContent = JSON.stringify(json);
+      if (json.ok) statusEls.regValue.value = String(Number(json.value));
+      statusEls.regState.textContent = `${json.ok ? '成功' : '失败'} 十进制 ${JSON.stringify(json)}`;
     }
     statusEls.regReadBtn.addEventListener('click', () => accessRegister(false).catch(error => {
       statusEls.regState.textContent = error.message;
@@ -971,9 +1050,12 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         statusEls.camBrightness.value = status.camera.brightness;
         statusEls.camContrast.value = status.camera.contrast;
         statusEls.camSaturation.value = status.camera.saturation;
+        statusEls.camAec.value = status.camera.aec ? '1' : '0';
         statusEls.camAecValue.value = status.camera.aec_value;
+        statusEls.camAgc.value = status.camera.agc ? '1' : '0';
         statusEls.camAgcGain.value = status.camera.agc_gain;
         statusEls.camMirror.value = status.camera.hmirror ? '1' : '0';
+        statusEls.camVflip.value = status.camera.vflip ? '1' : '0';
       }
       if (status.config) {
         if (!configInputsDirty) {
@@ -1123,6 +1205,28 @@ bool parseUnsignedArg(const char *name, uint32_t maxValue, uint32_t *value) {
   }
   char *end = nullptr;
   const unsigned long parsed = strtoul(raw.c_str(), &end, 0);
+  if (!end || *end != '\0' || parsed > maxValue) {
+    return false;
+  }
+  *value = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool parseDecimalUnsignedArg(const char *name, uint32_t maxValue, uint32_t *value) {
+  if (!value || !server.hasArg(name)) {
+    return false;
+  }
+  const String raw = server.arg(name);
+  if (raw.length() == 0) {
+    return false;
+  }
+  for (size_t i = 0; i < raw.length(); i++) {
+    if (!isdigit(static_cast<unsigned char>(raw[i]))) {
+      return false;
+    }
+  }
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(raw.c_str(), &end, 10);
   if (!end || *end != '\0' || parsed > maxValue) {
     return false;
   }
@@ -3170,6 +3274,89 @@ void cameraStreamTask(void *parameter) {
   }
 }
 
+bool cameraControlValueAllowed(const String &name, int value, const char **error) {
+  if (name == "framesize") {
+    if (!boardcamera::isSupportedFrameSize(value)) {
+      *error = "unsupported_framesize";
+      return false;
+    }
+    return true;
+  }
+
+  struct Range {
+    const char *name;
+    int minValue;
+    int maxValue;
+  };
+  static const Range ranges[] = {
+      {"quality", 4, 63},
+      {"brightness", -2, 2},
+      {"contrast", -2, 2},
+      {"saturation", -2, 2},
+      {"sharpness", -2, 2},
+      {"special_effect", 0, 6},
+      {"wb_mode", 0, 4},
+      {"awb", 0, 1},
+      {"awb_gain", 0, 1},
+      {"aec", 0, 1},
+      {"aec2", 0, 1},
+      {"ae_level", -2, 2},
+      {"aec_value", 0, 1200},
+      {"agc", 0, 1},
+      {"agc_gain", 0, 30},
+      {"gainceiling", 0, 6},
+      {"hmirror", 0, 1},
+      {"vflip", 0, 1},
+      {"colorbar", 0, 1},
+      {"dcw", 0, 1},
+      {"bpc", 0, 1},
+      {"wpc", 0, 1},
+      {"raw_gma", 0, 1},
+      {"lenc", 0, 1},
+  };
+
+  for (const Range &range : ranges) {
+    if (name == range.name) {
+      if (value < range.minValue || value > range.maxValue) {
+        *error = "out_of_range";
+        return false;
+      }
+      return true;
+    }
+  }
+
+  *error = "unsupported_control";
+  return false;
+}
+
+bool cameraEffectiveValue(const BoardCameraStatus &cam, const String &name, int *value) {
+  if (!value) {
+    return false;
+  }
+  if (name == "framesize") *value = cam.frameSize;
+  else if (name == "quality") *value = cam.quality;
+  else if (name == "brightness") *value = cam.brightness;
+  else if (name == "contrast") *value = cam.contrast;
+  else if (name == "saturation") *value = cam.saturation;
+  else if (name == "sharpness") *value = cam.sharpness;
+  else if (name == "special_effect") *value = cam.specialEffect;
+  else if (name == "wb_mode") *value = cam.wbMode;
+  else if (name == "awb") *value = cam.awb;
+  else if (name == "awb_gain") *value = cam.awbGain;
+  else if (name == "aec") *value = cam.aec;
+  else if (name == "aec2") *value = cam.aec2;
+  else if (name == "ae_level") *value = cam.aeLevel;
+  else if (name == "aec_value") *value = cam.aecValue;
+  else if (name == "agc") *value = cam.agc;
+  else if (name == "agc_gain") *value = cam.agcGain;
+  else if (name == "gainceiling") *value = cam.gainCeiling;
+  else if (name == "hmirror") *value = cam.hmirror;
+  else if (name == "vflip") *value = cam.vflip;
+  else if (name == "colorbar") *value = cam.colorbar;
+  else return false;
+  return true;
+}
+
 void handleCameraControl() {
   if (server.method() != HTTP_POST) {
     server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
@@ -3180,7 +3367,8 @@ void handleCameraControl() {
     return;
   }
 
-  String name = server.arg("name");
+  const String requestedName = server.arg("name");
+  String name = requestedName;
   int value = 0;
   if (name == "framesize_name") {
     value = boardcamera::frameSizeFromName(server.arg("value"));
@@ -3201,18 +3389,45 @@ void handleCameraControl() {
       return;
     }
   }
+
+  const char *rangeError = "";
+  if (!cameraControlValueAllowed(name, value, &rangeError)) {
+    String json;
+    json.reserve(120);
+    json += "{\"applied\":false,\"error\":\"";
+    json += rangeError;
+    json += "\"}";
+    server.send(400, "application/json; charset=utf-8", json);
+    return;
+  }
+
   const bool ok = boardcamera::setControl(name, value);
   if (!ok) {
     server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_control\"}");
     return;
   }
 
+  const BoardCameraStatus &cam = boardcamera::status();
+  int effective = 0;
+  const bool hasEffective = cameraEffectiveValue(cam, name, &effective);
+  const bool verified = hasEffective && effective == value;
   String json;
-  json.reserve(160);
+  json.reserve(260);
   json += "{\"applied\":true,\"name\":\"";
   json += name;
+  json += "\",\"requested_name\":\"";
+  json += requestedName;
   json += "\",\"value\":";
   json += String(value);
+  json += ",\"effective\":";
+  json += String(hasEffective ? effective : -1);
+  json += ",\"verified\":";
+  json += verified ? "true" : "false";
+  if (name == "framesize") {
+    json += ",\"effective_name\":\"";
+    json += boardcamera::frameSizeName(effective);
+    json += "\"";
+  }
   json += "}";
   server.send(200, "application/json; charset=utf-8", json);
 }
@@ -3270,7 +3485,7 @@ bool registerWriteAllowed(RegisterDevice device, uint16_t reg) {
     return false;
   }
   if (device == RegisterDevice::kEs8388) {
-    return reg >= 0x2E && reg <= 0x31;
+    return reg >= 46 && reg <= 49;
   }
   return false;
 }
@@ -3323,12 +3538,12 @@ void handleRegisterAccess() {
 
   const RegisterDevice device = parseRegisterDevice(server.arg("device"));
   uint32_t regValue = 0;
-  uint32_t maskValue = 0xFF;
-  if (device == RegisterDevice::kInvalid || !parseUnsignedArg("reg", 0xFFFF, &regValue)) {
+  uint32_t maskValue = 255;
+  if (device == RegisterDevice::kInvalid || !parseDecimalUnsignedArg("reg", 65535, &regValue)) {
     server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_request\"}");
     return;
   }
-  if (server.hasArg("mask") && !parseUnsignedArg("mask", 0xFF, &maskValue)) {
+  if (server.hasArg("mask") && !parseDecimalUnsignedArg("mask", 255, &maskValue)) {
     server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_mask\"}");
     return;
   }
@@ -3347,11 +3562,13 @@ void handleRegisterAccess() {
 
   if (server.method() == HTTP_POST) {
     uint32_t parsedValue = 0;
-    if (!parseUnsignedArg("value", 0xFF, &parsedValue)) {
+    if (!parseDecimalUnsignedArg("value", 255, &parsedValue)) {
       error = "invalid_value";
     } else if (!registerWriteAllowed(device, reg)) {
       statusCode = 403;
       error = "write_blocked";
+    } else if (device == RegisterDevice::kEs8388 && parsedValue > 33) {
+      error = "value_out_of_range";
     } else {
       const uint8_t writeValue = static_cast<uint8_t>(parsedValue);
       ok = registerWrite(device, reg, mask, writeValue) && registerRead(device, reg, mask, &value);

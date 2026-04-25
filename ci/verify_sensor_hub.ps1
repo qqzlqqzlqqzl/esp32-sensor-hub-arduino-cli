@@ -597,19 +597,33 @@ function Test-CameraEndpoint {
         }
     }
 
-    $regText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x00&mask=0xff') -TimeoutSeconds 6
+    $regText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0&mask=255') -TimeoutSeconds 6
     $regJson = $regText | ConvertFrom-Json
     $controlText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=18') -TimeoutSeconds 6
     $controlJson = $controlText | ConvertFrom-Json
-    $unsafeWriteText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=xl9555&reg=0x02&mask=0xff&value=0xff') -TimeoutSeconds 6
+    $brightnessText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=brightness&value=1') -TimeoutSeconds 6
+    $brightnessJson = $brightnessText | ConvertFrom-Json
+    $invalidQualityText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=99') -TimeoutSeconds 6
+    $invalidQualityJson = $invalidQualityText | ConvertFrom-Json
+    $hexRegText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x00&mask=255') -TimeoutSeconds 6
+    $hexRegJson = $hexRegText | ConvertFrom-Json
+    $es8388BeforeText = Invoke-Curl ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255') -TimeoutSeconds 6
+    $es8388BeforeJson = $es8388BeforeText | ConvertFrom-Json
+    $es8388WriteText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255&value=18') -TimeoutSeconds 6
+    $es8388WriteJson = $es8388WriteText | ConvertFrom-Json
+    if ($es8388BeforeJson.ok -eq $true) {
+        Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255&value=' + [int]$es8388BeforeJson.value) -TimeoutSeconds 6 | Out-Null
+    }
+    Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=brightness&value=0') -TimeoutSeconds 6 | Out-Null
+    $unsafeWriteText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=xl9555&reg=2&mask=255&value=255') -TimeoutSeconds 6
     $unsafeWriteJson = $unsafeWriteText | ConvertFrom-Json
     $badFrameText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=framesize_name&value=BAD') -TimeoutSeconds 6
     $badFrameJson = $badFrameText | ConvertFrom-Json
     $badValueText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=BAD') -TimeoutSeconds 6
     $badValueJson = $badValueText | ConvertFrom-Json
-    $badDeviceText = Invoke-Curl ('http://' + $Ip + '/api/register?device=bad%22device&reg=0x00') -TimeoutSeconds 6
+    $badDeviceText = Invoke-Curl ('http://' + $Ip + '/api/register?device=bad%22device&reg=0') -TimeoutSeconds 6
     $badDeviceJson = $badDeviceText | ConvertFrom-Json
-    $wrappedRegText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x100') -TimeoutSeconds 6
+    $wrappedRegText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=256') -TimeoutSeconds 6
     $wrappedRegJson = $wrappedRegText | ConvertFrom-Json
     Start-Sleep -Milliseconds 500
     $afterText = Invoke-Curl ('http://' + $Ip + '/api/camera') -TimeoutSeconds 8
@@ -630,6 +644,17 @@ function Test-CameraEndpoint {
         ($afterFailures -eq $beforeFailures) -and
         ($regJson.ok -eq $true) -and
         ($controlJson.applied -eq $true) -and
+        ($controlJson.verified -eq $true) -and
+        ([int]$controlJson.effective -eq 18) -and
+        ($brightnessJson.applied -eq $true) -and
+        ($brightnessJson.verified -eq $true) -and
+        ([int]$brightnessJson.effective -eq 1) -and
+        ($invalidQualityJson.applied -eq $false) -and
+        ($invalidQualityJson.error -eq 'out_of_range') -and
+        ($hexRegJson.ok -eq $false) -and
+        ($hexRegJson.error -eq 'invalid_request') -and
+        ($es8388WriteJson.ok -eq $true) -and
+        ([int]$es8388WriteJson.value -eq 18) -and
         ($unsafeWriteJson.ok -eq $false) -and
         ($unsafeWriteJson.error -eq 'write_blocked') -and
         ($badFrameJson.applied -eq $false) -and
@@ -644,7 +669,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} reg_value={13} quality={14} unsafe_write={15} bad_frame={16} bad_value={17} bad_device={18} wrapped_reg={19}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} reg_value={13} quality={14} quality_verified={15} brightness_verified={16} invalid_quality={17} hex_reg={18} es8388_volume={19} unsafe_write={20} bad_frame={21} bad_value={22} bad_device={23} wrapped_reg={24}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -1210,6 +1235,13 @@ try {
         $htmlText.Contains('/api/config') -and
         $htmlText.Contains('查看 CSV 日志') -and
         $htmlText.Contains('CPU 使用率') -and
+        $htmlText.Contains('只接受十进制') -and
+        $htmlText.Contains('ES8388 音频') -and
+        $htmlText.Contains('寄存器 46 到 49') -and
+        $htmlText.Contains('写入值 0 到 33') -and
+        $htmlText.Contains('写入被禁止') -and
+        $htmlText.Contains('XL9555 IO 扩展') -and
+        $htmlText.Contains('已生效') -and
         (Test-HtmlCadenceMarkers -HtmlText $htmlText)
     Add-Result 'HTML Dashboard' $htmlOk ('HTML bytes=' + $htmlText.Length)
 
@@ -1257,7 +1289,8 @@ $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
-$reportLines += '- Camera JPEG capture, camera controls and safe hardware register access are verified through HTTP APIs'
+$reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
+$reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'

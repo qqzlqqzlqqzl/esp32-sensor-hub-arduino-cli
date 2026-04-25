@@ -34,10 +34,11 @@ Feature: ESP32 Sensor Hub Dashboard
 
   Scenario: Hardware register and camera controls are exposed
     Given the board HTTP service is online
-    When the verification flow reads an AP3216C register and applies a camera quality setting
+    When the verification flow reads an AP3216C register and applies camera quality and brightness settings
     Then the register API should return a masked value
-    And the camera control API should report the applied setting in /api/camera
-    And unsafe register writes, invalid devices, wrapped 8-bit register addresses, and invalid camera frame sizes should be rejected
+    And the camera control API should report effective values that round-trip through /api/camera
+    And register controls should use Chinese decimal guidance and safe write ranges
+    And unsafe register writes, non-decimal register numbers, invalid devices, wrapped 8-bit register addresses, out-of-range camera values, and invalid camera frame sizes should be rejected
     And the camera dashboard should use a dedicated MJPEG stream with a measured 20 FPS target
 
   Scenario: 2Hz live polling remains stable

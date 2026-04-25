@@ -205,19 +205,19 @@ bool setControl(const String &name, int value) {
   if (name == "framesize") {
     ok = isSupportedFrameSize(value) && sensor->set_framesize && sensor->set_framesize(sensor, static_cast<framesize_t>(value)) == 0;
   } else if (name == "quality") {
-    ok = sensor->set_quality && sensor->set_quality(sensor, constrain(value, 4, 63)) == 0;
+    ok = sensor->set_quality && sensor->set_quality(sensor, value) == 0;
   } else if (name == "brightness") {
-    ok = applySetter(sensor->set_brightness, constrain(value, -2, 2));
+    ok = applySetter(sensor->set_brightness, value);
   } else if (name == "contrast") {
-    ok = applySetter(sensor->set_contrast, constrain(value, -2, 2));
+    ok = applySetter(sensor->set_contrast, value);
   } else if (name == "saturation") {
-    ok = applySetter(sensor->set_saturation, constrain(value, -2, 2));
+    ok = applySetter(sensor->set_saturation, value);
   } else if (name == "sharpness") {
-    ok = applySetter(sensor->set_sharpness, constrain(value, -2, 2));
+    ok = applySetter(sensor->set_sharpness, value);
   } else if (name == "special_effect") {
-    ok = applySetter(sensor->set_special_effect, constrain(value, 0, 6));
+    ok = applySetter(sensor->set_special_effect, value);
   } else if (name == "wb_mode") {
-    ok = applySetter(sensor->set_wb_mode, constrain(value, 0, 4));
+    ok = applySetter(sensor->set_wb_mode, value);
   } else if (name == "awb") {
     ok = applySetter(sensor->set_whitebal, value ? 1 : 0);
   } else if (name == "awb_gain") {
@@ -227,15 +227,15 @@ bool setControl(const String &name, int value) {
   } else if (name == "aec2") {
     ok = applySetter(sensor->set_aec2, value ? 1 : 0);
   } else if (name == "ae_level") {
-    ok = applySetter(sensor->set_ae_level, constrain(value, -2, 2));
+    ok = applySetter(sensor->set_ae_level, value);
   } else if (name == "aec_value") {
-    ok = applySetter(sensor->set_aec_value, constrain(value, 0, 1200));
+    ok = applySetter(sensor->set_aec_value, value);
   } else if (name == "agc") {
     ok = applySetter(sensor->set_gain_ctrl, value ? 1 : 0);
   } else if (name == "agc_gain") {
-    ok = applySetter(sensor->set_agc_gain, constrain(value, 0, 30));
+    ok = applySetter(sensor->set_agc_gain, value);
   } else if (name == "gainceiling") {
-    ok = sensor->set_gainceiling && sensor->set_gainceiling(sensor, static_cast<gainceiling_t>(constrain(value, 0, 6))) == 0;
+    ok = sensor->set_gainceiling && sensor->set_gainceiling(sensor, static_cast<gainceiling_t>(value)) == 0;
   } else if (name == "hmirror") {
     ok = applySetter(sensor->set_hmirror, value ? 1 : 0);
   } else if (name == "vflip") {
