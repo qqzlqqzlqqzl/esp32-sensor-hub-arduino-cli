@@ -10,6 +10,7 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - ES8388 microphone level capture
 - ES8388 board speaker playback and hardware verification
 - MC5640 / OV5640 board camera JPEG snapshots in the HTML dashboard
+- OPI PSRAM enabled for camera frame buffers
 - Hardware control panel for camera settings, selected ESP32 controls and safe device register access
 - LittleFS CSV persistence
 - Fast boot history recovery with boot timing telemetry
@@ -34,7 +35,7 @@ Requirements:
 Example:
 
 ```powershell
-& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile -u -p COM7 --fqbn esp32:esp32:esp32s3 --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111"' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
+& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile -u -p COM7 --fqbn 'esp32:esp32:esp32s3:PSRAM=opi' --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111"' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
 ```
 
 ## Verify
@@ -46,6 +47,7 @@ Example:
 The default verification path skips host USB camera checks and focuses on the board sensor hub:
 
 - Arduino CLI build/upload
+- OPI PSRAM detection through `/api/status`
 - live API, HTML, CSV, LCD and speaker playback checks
 - MC5640 camera status, JPEG capture, camera control and safe register console checks
 - MC5640 MJPEG stream cadence and JPEG latency checks

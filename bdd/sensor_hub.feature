@@ -2,7 +2,7 @@ Feature: ESP32 Sensor Hub Dashboard
   The ESP32-S3 board should expose a persisted multi-sensor dashboard over HTTP and on the onboard LCD.
 
   Scenario: Firmware builds and uploads with Arduino CLI
-    Given the Arduino CLI can compile the sketch for esp32:esp32:esp32s3
+    Given the Arduino CLI can compile the sketch for esp32:esp32:esp32s3 with OPI PSRAM enabled
     When the sketch is uploaded to COM7
     Then the serial console should report a reachable dashboard URL
 
@@ -14,6 +14,7 @@ Feature: ESP32 Sensor Hub Dashboard
     And /api/live should report 500 ms live polling, cached live payloads, and 10000 ms sample and flush cadence
     And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
     And the MC5640 camera should report online status and serve a JPEG frame to the HTML dashboard
+    And /api/status should report PSRAM available for camera frame buffers
     And at least one persisted history row should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed

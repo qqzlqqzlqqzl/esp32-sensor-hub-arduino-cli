@@ -2,7 +2,7 @@ param(
     [string]$CliPath = 'C:\Program Files\Arduino CLI\arduino-cli.exe',
     [string]$SketchPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub',
     [string]$Port = '',
-    [string]$Fqbn = 'esp32:esp32:esp32s3',
+    [string]$Fqbn = 'esp32:esp32:esp32s3:PSRAM=opi',
     [string]$WifiSsid,
     [string]$WifiPassword,
     [string]$ReportPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub\ci\ci_report.md',
@@ -635,6 +635,7 @@ function Test-CameraEndpoint {
     $quality = [int](Get-PropertyValue -Object $afterJson.camera -Name 'quality' -Default -1)
 
     $ok = ($cameraJson.camera.online -eq $true) -and
+        ($cameraJson.camera.psram -eq $true) -and
         ([int](Get-PropertyValue -Object $cameraJson.camera -Name 'pid' -Default 0) -gt 0) -and
         ($jpgLength -gt 1024) -and
         ($avgCaptureMs -le 1200) -and
@@ -674,7 +675,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} name={1} pid={2} jpg_bytes={3} avg_jpg_ms={4} max_jpg_ms={5} stream_bytes={6} stream_frames={7} stream_fps={8} capture_before={9} capture_after={10} failures_before={11} failures_after={12} preset={13}/{14} reg_value={15} quality={16} quality_verified={17} brightness_verified={18} invalid_quality={19} hex_reg={20} es8388_volume={21} unsafe_write={22} bad_frame={23} bad_value={24} bad_device={25} wrapped_reg={26}' -f $cameraJson.camera.online, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $presetJson.verified_count, $presetJson.control_count, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} capture_before={10} capture_after={11} failures_before={12} failures_after={13} preset={14}/{15} reg_value={16} quality={17} quality_verified={18} brightness_verified={19} invalid_quality={20} hex_reg={21} es8388_volume={22} unsafe_write={23} bad_frame={24} bad_value={25} bad_device={26} wrapped_reg={27}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $presetJson.verified_count, $presetJson.control_count, $regJson.value, $quality, $controlJson.verified, $brightnessJson.verified, $invalidQualityJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -1479,11 +1480,11 @@ $reportLines += ''
 $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
-$reportLines += '- Firmware builds and uploads with Arduino CLI'
+$reportLines += '- Firmware builds and uploads with Arduino CLI using OPI PSRAM enabled'
 $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- LCD recovery can be triggered without a board power-cycle, holds a high-contrast visible pixel test pattern, and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
-$reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
+$reportLines += '- Camera JPEG capture, OPI PSRAM availability, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
