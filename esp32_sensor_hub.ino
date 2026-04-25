@@ -119,9 +119,11 @@ uint32_t gLiveJsonBuildCount = 0;
 struct DisplayRecoveryState {
   uint32_t initCount = 0;
   uint32_t reinitCount = 0;
+  uint32_t visibleTestCount = 0;
   uint32_t prepareRestartCount = 0;
   uint32_t lastInitMs = 0;
   uint32_t lastReinitMs = 0;
+  uint32_t lastVisibleTestMs = 0;
   uint32_t lastPowerCycleMs = 0;
   uint8_t outputPort1 = 0xFF;
   uint8_t configPort1 = 0xFF;
@@ -130,6 +132,7 @@ struct DisplayRecoveryState {
   bool pinsOutput = false;
   char lastAction[20] = "BOOT";
 } gDisplayRecovery;
+unsigned long gDisplayVisibleTestUntilMs = 0;
 
 struct BootState {
   uint32_t serialReadyMs = 0;
@@ -1830,6 +1833,28 @@ void lcdPrintLine(uint16_t y, lcd_font_t font, uint16_t color, const char *fmt, 
   lcd_show_string(6, y, spilcd_width - 12, 24, font, line, color);
 }
 
+void drawDisplayVisibleTest(const char *label, unsigned long holdMs = 30000UL) {
+  if (!gDisplayReady) {
+    return;
+  }
+  const uint16_t bandHeight = spilcd_height / 6;
+  const uint16_t colors[] = {RED, GREEN, BLUE, YELLOW, CYAN, WHITE};
+  for (uint8_t i = 0; i < 6; i++) {
+    const uint16_t y0 = i * bandHeight;
+    const uint16_t y1 = (i == 5) ? (spilcd_height - 1) : ((i + 1) * bandHeight - 1);
+    lcd_fill(0, y0, spilcd_width - 1, y1, colors[i]);
+  }
+  g_back_color = BLACK;
+  lcdPrintLine(8, LCD_FONT_16, WHITE, "LCD PIXEL TEST");
+  lcdPrintLine(32, LCD_FONT_12, WHITE, "%s #%lu",
+               label,
+               static_cast<unsigned long>(gDisplayRecovery.initCount));
+  lcdPrintLine(52, LCD_FONT_12, WHITE, "If black, SPI/panel init failed");
+  gDisplayRecovery.visibleTestCount++;
+  gDisplayRecovery.lastVisibleTestMs = millis();
+  gDisplayVisibleTestUntilMs = millis() + holdMs;
+}
+
 void initDisplay(bool manualReinit = false) {
   const unsigned long startedAt = millis();
   gDisplayReady = false;
@@ -1851,6 +1876,7 @@ void initDisplay(bool manualReinit = false) {
   refreshDisplayRecoveryIoState();
   gSystem.displayPage = 2;
   snprintf(gSystem.displayPageName, sizeof(gSystem.displayPageName), "BOOT");
+  drawDisplayVisibleTest(manualReinit ? "MANUAL REINIT" : "BOOT", 8000UL);
   lcdPrintLine(6, LCD_FONT_16, CYAN, "ESP32 SENSOR HUB");
   lcdPrintLine(30, LCD_FONT_16, GREEN, "LCD READY");
   lcdPrintLine(54, LCD_FONT_12, WHITE, "IP %s", currentDashboardIp().c_str());
@@ -1931,12 +1957,18 @@ void updateDisplayIfDue() {
   if (!gDisplayReady || millis() - lastDraw < kDisplayIntervalMs) {
     return;
   }
+  if (gDisplayVisibleTestUntilMs != 0 && static_cast<long>(gDisplayVisibleTestUntilMs - millis()) > 0) {
+    return;
+  }
+  gDisplayVisibleTestUntilMs = 0;
   lastDraw = millis();
 
   gSystem.displayPage = (gSystem.displayPage + 1U) % 4U;
   snprintf(gSystem.displayPageName, sizeof(gSystem.displayPageName), "%s", displayPageName(gSystem.displayPage));
 
-  lcd_clear(BLACK);
+  g_back_color = DARKBLUE;
+  lcd_clear(DARKBLUE);
+  lcd_fill(0, 0, spilcd_width - 1, 20, BLUE);
   lcdPrintLine(6, LCD_FONT_16, CYAN, "ESP32 SENSOR HUB");
   lcdPrintLine(26, LCD_FONT_12, WHITE, "IP %s", currentDashboardIp().c_str());
   lcdPrintLine(42, LCD_FONT_12, WHITE, "PAGE %u %s", gSystem.displayPage + 1, gSystem.displayPageName);
@@ -2682,12 +2714,16 @@ void appendDisplayJson(String &json) {
   json += String(gDisplayRecovery.initCount);
   json += ",\"reinit_count\":";
   json += String(gDisplayRecovery.reinitCount);
+  json += ",\"visible_test_count\":";
+  json += String(gDisplayRecovery.visibleTestCount);
   json += ",\"prepare_restart_count\":";
   json += String(gDisplayRecovery.prepareRestartCount);
   json += ",\"last_init_ms\":";
   json += String(gDisplayRecovery.lastInitMs);
   json += ",\"last_reinit_ms\":";
   json += String(gDisplayRecovery.lastReinitMs);
+  json += ",\"last_visible_test_ms\":";
+  json += String(gDisplayRecovery.lastVisibleTestMs);
   json += ",\"last_power_cycle_ms\":";
   json += String(gDisplayRecovery.lastPowerCycleMs);
   json += ",\"xl9555_output_port1\":";
@@ -4101,6 +4137,20 @@ void handleDisplayReinit() {
   server.send(ok ? 200 : 500, "application/json; charset=utf-8", json);
 }
 
+void handleDisplayTest() {
+  drawDisplayVisibleTest("HTTP TEST", 30000UL);
+  gLiveJsonCache = "";
+  gLiveJsonCacheMs = 0;
+  String json;
+  json.reserve(420);
+  json += "{\"applied\":";
+  json += gDisplayReady ? "true" : "false";
+  json += ",";
+  appendDisplayJson(json);
+  json += "}";
+  server.send(gDisplayReady ? 200 : 500, "application/json; charset=utf-8", json);
+}
+
 void handleReboot() {
   const bool ok = flushPendingLog();
   if (!ok) {
@@ -4167,6 +4217,7 @@ void setupServer() {
   server.on("/api/config", HTTP_ANY, handleConfig);
   server.on("/api/flush", HTTP_POST, handleFlush);
   server.on("/api/display/reinit", HTTP_POST, handleDisplayReinit);
+  server.on("/api/display/test", HTTP_POST, handleDisplayTest);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
   server.begin();

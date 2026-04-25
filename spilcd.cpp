@@ -53,7 +53,8 @@ uint8_t spilcd_dir = 1;             /* 默认横屏(1)、竖屏(0) */
 uint32_t g_point_color = 0XF800;    /* 画笔颜色 */
 uint32_t g_back_color  = 0XFFFF;    /* 背景色 */
 
-static const int SPICLK = 80000000; /* SPI通信速率(屏幕显示异常,调低SPICLK) */
+static const int SPICLK = 40000000; /* SPI通信速率(屏幕显示异常,调低SPICLK) */
+static const uint8_t SPIMODE = SPI_MODE0;
 
 SPIClass* spi_lcd = NULL;           /* 定义一个未初始化指向SPI对象的指针 */
 
@@ -213,7 +214,7 @@ void lcd_scan_dir(uint8_t dir)
 
     dirreg = 0x36;
 
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3)); 
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));
 
     LCD_CS(0);  
     lcd_write_cmd(dirreg);
@@ -280,7 +281,7 @@ void lcd_clear(uint16_t color)
     uint32_t index = 0;
     uint32_t totalpoint = spilcd_width * spilcd_height;
 
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3));
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));
     LCD_CS(0);
 
     lcd_set_address(0, 0, spilcd_width - 1 ,spilcd_height - 1);
@@ -344,7 +345,7 @@ void lcd_init(void)
     LCD_RST(1);
     delay(120);
 
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3));    /* 使用在SPISettings中自定义的配置进行SPI总线初始化 */
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));    /* 使用在SPISettings中自定义的配置进行SPI总线初始化 */
     
     LCD_CS(0);                  /* 拉低片选线,选中设备 */
 
@@ -457,10 +458,10 @@ void lcd_init(void)
     lcd_write_data(0x33);
 
     lcd_write_cmd(0xB7);        /*  Gate Control */
-    lcd_write_data(0x72);
+    lcd_write_data(0x75);
 
     lcd_write_cmd(0xBB);        /* VCOM Setting */
-    lcd_write_data(0x3D);
+    lcd_write_data(0x1C);
 
     lcd_write_cmd(0xC0);        /* LCM Control */
     lcd_write_data(0x2C);
@@ -469,13 +470,13 @@ void lcd_init(void)
     lcd_write_data(0x01);
 
     lcd_write_cmd(0xC3);        /* VRH Set */
-    lcd_write_data(0x19);
+    lcd_write_data(0x0F);
 
     lcd_write_cmd(0xC4);        /* VDV Set */
     lcd_write_data(0x20);
 
     lcd_write_cmd(0xC6);        /* Frame Rate Control in Normal Mode */
-    lcd_write_data(0x0F);
+    lcd_write_data(0x01);
 
     lcd_write_cmd(0xD0);        /* Power Control 1 */
     lcd_write_data(0xA4);
@@ -560,7 +561,7 @@ void lcd_fill(uint16_t xs, uint16_t ys, uint16_t xe, uint16_t ye, uint16_t color
     
     area_size = (xe - xs + 1) * (ye - ys + 1) * sizeof(uint16_t);   /* 计算区域的字节数 */
 
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3));
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));
     LCD_CS(0);
 
     lcd_set_address(xs, ys, xe, ye);
@@ -593,7 +594,7 @@ void lcd_fill(uint16_t xs, uint16_t ys, uint16_t xe, uint16_t ye, uint16_t color
  */
 void lcd_draw_point(uint16_t x, uint16_t y, uint16_t color)
 {
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3));
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));
     LCD_CS(0);
 
     lcd_set_address(x, y, x, y);
@@ -1097,7 +1098,7 @@ void lcd_show_pic(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint8
         return;
     }
 
-    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPI_MODE3));                               
+    spi_lcd->beginTransaction(SPISettings(SPICLK, MSBFIRST, SPIMODE));
     LCD_CS(0);
 
     lcd_set_address(x, y, x + width - 1, y + height - 1);

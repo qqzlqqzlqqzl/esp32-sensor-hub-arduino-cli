@@ -791,15 +791,20 @@ function Test-DisplayRecovery {
     $beforeDisplay = Get-PropertyValue -Object $BeforeStatus -Name 'display' -Default $null
     $beforeInitCount = [int](Get-PropertyValue -Object $beforeDisplay -Name 'init_count' -Default 0)
     $beforeReinitCount = [int](Get-PropertyValue -Object $beforeDisplay -Name 'reinit_count' -Default 0)
+    $beforeVisibleTestCount = [int](Get-PropertyValue -Object $beforeDisplay -Name 'visible_test_count' -Default 0)
     $reinitText = Invoke-CurlPost ('http://' + $Ip + '/api/display/reinit') -TimeoutSeconds 10
     $reinitJson = $reinitText | ConvertFrom-Json
+    $testText = Invoke-CurlPost ('http://' + $Ip + '/api/display/test') -TimeoutSeconds 10
+    $testJson = $testText | ConvertFrom-Json
     Start-Sleep -Seconds 1
     $statusText = Invoke-Curl ('http://' + $Ip + '/api/status') -TimeoutSeconds 8
     $statusJson = $statusText | ConvertFrom-Json
     $display = $statusJson.display
     $initCount = [int](Get-PropertyValue -Object $display -Name 'init_count' -Default 0)
     $reinitCount = [int](Get-PropertyValue -Object $display -Name 'reinit_count' -Default 0)
+    $visibleTestCount = [int](Get-PropertyValue -Object $display -Name 'visible_test_count' -Default 0)
     $lastReinitMs = [int](Get-PropertyValue -Object $display -Name 'last_reinit_ms' -Default 0)
+    $lastVisibleTestMs = [int](Get-PropertyValue -Object $display -Name 'last_visible_test_ms' -Default 0)
     $outputPort1 = [int](Get-PropertyValue -Object $display -Name 'xl9555_output_port1' -Default 0)
     $configPort1 = [int](Get-PropertyValue -Object $display -Name 'xl9555_config_port1' -Default 255)
     $powerResetHigh = (($outputPort1 -band 12) -eq 12)
@@ -811,7 +816,10 @@ function Test-DisplayRecovery {
         ($display.pins_output -eq $true) -and
         ($initCount -ge ($beforeInitCount + 1)) -and
         ($reinitCount -ge ($beforeReinitCount + 1)) -and
+        ($testJson.applied -eq $true) -and
+        ($visibleTestCount -ge ($beforeVisibleTestCount + 2)) -and
         ($lastReinitMs -gt 0) -and
+        ($lastVisibleTestMs -gt 0) -and
         $powerResetHigh -and
         $powerResetOutput
 
@@ -819,7 +827,7 @@ function Test-DisplayRecovery {
         Passed = $ok
         StatusText = $statusText
         StatusJson = $statusJson
-        Details = ('before_init={0} init={1} before_reinit={2} reinit={3} last_reinit_ms={4} out_p1={5} cfg_p1={6} power_high={7} reset_high={8} pins_output={9} applied={10}' -f $beforeInitCount, $initCount, $beforeReinitCount, $reinitCount, $lastReinitMs, $outputPort1, $configPort1, $display.power_high, $display.reset_high, $display.pins_output, $reinitJson.applied)
+        Details = ('before_init={0} init={1} before_reinit={2} reinit={3} before_visible={4} visible={5} last_reinit_ms={6} last_visible_ms={7} out_p1={8} cfg_p1={9} power_high={10} reset_high={11} pins_output={12} reinit_applied={13} test_applied={14}' -f $beforeInitCount, $initCount, $beforeReinitCount, $reinitCount, $beforeVisibleTestCount, $visibleTestCount, $lastReinitMs, $lastVisibleTestMs, $outputPort1, $configPort1, $display.power_high, $display.reset_high, $display.pins_output, $reinitJson.applied, $testJson.applied)
     }
 }
 
@@ -1472,7 +1480,7 @@ $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI'
 $reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
-$reportLines += '- LCD recovery can be triggered without a board power-cycle and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
+$reportLines += '- LCD recovery can be triggered without a board power-cycle, holds a high-contrast visible pixel test pattern, and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
 $reportLines += '- Camera JPEG capture, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
