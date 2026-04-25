@@ -9,6 +9,7 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - QMA6100P motion and posture
 - ES8388 microphone level capture
 - ES8388 board speaker playback and hardware verification
+- ADC input voltage telemetry with persisted raw, pin-mV and scaled voltage fields
 - MC5640 / OV5640 board camera JPEG snapshots in the HTML dashboard
 - OPI PSRAM enabled for camera frame buffers
 - Hardware control panel for camera settings, selected ESP32 controls and safe device register access
@@ -35,8 +36,18 @@ Requirements:
 Example:
 
 ```powershell
-& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile --fqbn 'esp32:esp32:esp32s3:PSRAM=opi' --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111"' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
+& 'C:\Program Files\Arduino CLI\arduino-cli.exe' compile --fqbn 'esp32:esp32:esp32s3:PSRAM=opi' --build-property 'build.extra_flags=-DWIFI_STA_SSID="Ziroom402" -DWIFI_STA_PASS="4001001111" -DADC_VOLTAGE_SCALE=1.0' 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub'
 ```
+
+## 输入电压 ADC
+
+固件默认按正点原子 ADC 示例使用 `GPIO8`（ESP32-S3 `ADC1_CHANNEL_7`）作为输入电压采样脚。`/api/status`、`/api/live`、`/api/history`、CSV、HTML 看板和 LCD 系统页都会显示：
+
+- `raw`：12 位 ADC 原始值。
+- `millivolts`：ADC 引脚电压，单位 mV。
+- `voltage_v`：按 `ADC_VOLTAGE_SCALE` 换算后的输入电压，单位 V。
+
+注意：ESP32 ADC 引脚不能直接接 5V、USB VBUS、12V 或其他高于 3.3V 的输入。测输入电压必须先用电阻分压把 ADC 引脚电压压到安全范围，再把 `ADC_VOLTAGE_SCALE` 设成分压倍率。例如 100k/100k 二分压测 5V 时，ADC 脚约 2.5V，`ADC_VOLTAGE_SCALE=2.0`。如果硬件接到其他 ADC 脚，可以编译时加 `-DADC_VOLTAGE_PIN=<gpio>` 覆盖。
 
 ## Verify
 
@@ -51,6 +62,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 - Arduino CLI build/upload
 - OPI PSRAM detection through `/api/status`
 - live API, HTML, CSV, LCD and speaker playback checks
+- ADC input voltage fields in status, live, history, CSV and dashboard HTML
 - MC5640 camera status, JPEG capture, camera control and safe register console checks
 - MC5640 MJPEG stream cadence and JPEG latency checks
 - camera one-click presets, AP3216C mode, QMA6100P range and ES8388 volume preset readback checks

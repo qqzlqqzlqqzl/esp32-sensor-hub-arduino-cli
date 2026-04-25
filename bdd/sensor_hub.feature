@@ -9,13 +9,13 @@ Feature: ESP32 Sensor Hub Dashboard
   Scenario: Live dashboard exposes sensor telemetry
     Given the board is running on the local Wi-Fi
     When the client requests /api/status, /api/health, /api/live and /api/history
-    Then DHT11, AP3216C, QMA6100P, microphone, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
-    And /api/health should report compact OK health for storage, sensors, speaker, alerts, uptime, heap and persisted samples
-    And /api/live should report 500 ms live polling, cached live payloads, and 10000 ms sample and flush cadence
+    Then DHT11, AP3216C, QMA6100P, microphone, ADC input voltage, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
+    And /api/health should report compact OK health for storage, sensors, ADC input voltage, speaker, alerts, uptime, heap and persisted samples
+    And /api/live should report 500 ms live polling, cached live payloads, ADC input voltage, and 10000 ms sample and flush cadence
     And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
     And the MC5640 camera should report online status and serve a JPEG frame to the HTML dashboard
     And /api/status should report PSRAM available for camera frame buffers
-    And at least one persisted history row should exist in LittleFS
+    And at least one persisted history row with ADC input voltage fields should exist in LittleFS
     And the LCD state should report an active offline page rotation
     And the board speaker playback verification should be marked as passed
     And posting /api/speak_temperature should increase or otherwise change board playback evidence in status fields such as speak_count
@@ -31,7 +31,7 @@ Feature: ESP32 Sensor Hub Dashboard
     Given the board HTTP service is online
     When the client requests / and /api/log.csv
     Then the HTML should contain the dashboard shell, a health link, completion-based 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
-    And the CSV log should contain persisted sensor samples
+    And the CSV log should contain persisted sensor samples including ADC input voltage columns
 
   Scenario: Hardware register and camera controls are exposed
     Given the board HTTP service is online
@@ -63,8 +63,8 @@ Feature: ESP32 Sensor Hub Dashboard
   Scenario: LittleFS config and sensor samples survive reboot
     Given the board HTTP service is online
     When the verification flow writes config, flushes logs, and reboots the board
-    Then /api/status should report the persisted config after reboot
-    And /api/history should still include recovered LittleFS samples
+    Then /api/status should report the persisted config and ADC input voltage after reboot
+    And /api/history should still include recovered LittleFS samples with ADC input voltage
 
   Scenario: Short unattended soak remains healthy
     Given the board HTTP service is online

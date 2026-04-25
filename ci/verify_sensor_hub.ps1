@@ -31,20 +31,52 @@ function Resolve-UploadPort {
     param([string]$RequestedPort)
 
     $available = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
-    if ($RequestedPort -and ($available -contains $RequestedPort)) {
-        return [pscustomobject]@{
-            Passed = $true
-            Port = $RequestedPort
-            Details = ('using requested port {0}; available={1}' -f $RequestedPort, (($available -join ', ')))
+    $serialDevices = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+' })
+    $deviceByPort = @{}
+    foreach ($device in $serialDevices) {
+        $match = [regex]::Match($device.Name, '\((COM\d+)\)')
+        if ($match.Success) {
+            $deviceByPort[$match.Groups[1].Value] = $device
         }
     }
 
-    $candidates = @($available | Where-Object { $_ -ne 'COM1' })
+    if ($RequestedPort -and ($available -contains $RequestedPort)) {
+        $requestedDevice = $deviceByPort[$RequestedPort]
+        if ($requestedDevice -and $requestedDevice.DeviceID -match 'VID_1A86&PID_FE0C') {
+            return [pscustomobject]@{
+                Passed = $false
+                Port = $null
+                Details = ('requested port {0} is SmartUSBHub control port ({1}), not ESP32 upload port' -f $RequestedPort, $requestedDevice.DeviceID)
+            }
+        }
+        return [pscustomobject]@{
+            Passed = $true
+            Port = $RequestedPort
+            Details = ('using requested port {0}; available={1}; device={2}' -f $RequestedPort, (($available -join ', ')), $(if ($requestedDevice) { $requestedDevice.DeviceID } else { '(unknown)' }))
+        }
+    }
+
+    $preferred = @($available | Where-Object {
+            $device = $deviceByPort[$_]
+            $device -and $device.DeviceID -match 'VID_1A86&PID_7523'
+        })
+    $candidates = @($available | Where-Object {
+            $device = $deviceByPort[$_]
+            ($_ -ne 'COM1') -and (-not ($device -and $device.DeviceID -match 'VID_1A86&PID_FE0C'))
+        })
+    if ($preferred.Count -gt 0) {
+        return [pscustomobject]@{
+            Passed = $true
+            Port = $preferred[0]
+            Details = ('using detected ESP32 CH340 port {0}; available={1}; device={2}' -f $preferred[0], (($available -join ', ')), $deviceByPort[$preferred[0]].DeviceID)
+        }
+    }
     if ($candidates.Count -gt 0) {
+        $candidateDevice = $deviceByPort[$candidates[0]]
         return [pscustomobject]@{
             Passed = $true
             Port = $candidates[0]
-            Details = ('using detected port {0}; requested={1}; available={2}' -f $candidates[0], $(if ($RequestedPort) { $RequestedPort } else { '(auto)' }), (($available -join ', ')))
+            Details = ('using detected non-hub port {0}; requested={1}; available={2}; device={3}' -f $candidates[0], $(if ($RequestedPort) { $RequestedPort } else { '(auto)' }), (($available -join ', ')), $(if ($candidateDevice) { $candidateDevice.DeviceID } else { '(unknown)' }))
         }
     }
 
@@ -487,10 +519,11 @@ function Test-CsvLog {
 
     $csvText = Invoke-Curl ('http://' + $Ip + '/api/log.csv') -TimeoutSeconds 35
     $csvLines = @($csvText -split [Environment]::NewLine | Where-Object { $_.Trim().Length -gt 0 })
-    $csvOk = ($csvLines.Count -ge 1) -and $csvLines[0].Contains(',')
+    $wideRows = @($csvLines | Where-Object { (($_ -split ',').Count) -ge 33 })
+    $csvOk = ($csvLines.Count -ge 1) -and $csvLines[0].Contains(',') -and ($wideRows.Count -ge 1)
     return [pscustomobject]@{
         Passed = $csvOk
-        Details = ('lines=' + $csvLines.Count)
+        Details = ('lines={0} adc_rows={1}' -f $csvLines.Count, $wideRows.Count)
     }
 }
 
@@ -506,6 +539,7 @@ function Test-HealthEndpoint {
         ($healthJson.status -eq 'OK') -and
         ($healthJson.storage_ok -eq $true) -and
         ($healthJson.sensors_ok -eq $true) -and
+        ($healthJson.adc_ok -eq $true) -and
         ($healthJson.speaker_ok -eq $true) -and
         ($healthJson.camera_ok -eq $true) -and
         ($healthJson.alerts_active -eq $false) -and
@@ -529,6 +563,7 @@ function Test-LiveEndpoint {
         ($null -ne $liveJson.ap3216c) -and
         ($null -ne $liveJson.qma6100p) -and
         ($null -ne $liveJson.mic) -and
+        ($null -ne $liveJson.adc) -and
         ($null -ne $liveJson.camera) -and
         ($null -ne $liveJson.system) -and
         ($null -ne $liveJson.storage) -and
@@ -539,6 +574,11 @@ function Test-LiveEndpoint {
         ([int]$liveJson.cadence.sample_interval_ms -eq 10000) -and
         ([int]$liveJson.cadence.flush_interval_ms -eq 10000) -and
         ([int]$liveJson.storage.live_build_count -ge 1) -and
+        ($liveJson.adc.online -eq $true) -and
+        (Test-PropertyPresent -Object $liveJson.adc -Name 'pin') -and
+        (Test-PropertyPresent -Object $liveJson.adc -Name 'raw') -and
+        (Test-PropertyPresent -Object $liveJson.adc -Name 'millivolts') -and
+        (Test-PropertyPresent -Object $liveJson.adc -Name 'voltage_v') -and
         ($liveJson.camera.online -eq $true) -and
         ([int]$liveJson.system.free_heap_bytes -gt 0) -and
         ([int]$liveJson.storage.persisted_samples -ge 1)
@@ -1349,6 +1389,12 @@ try {
         $statusJson.ap3216c.online -and
         $statusJson.qma6100p.online -and
         $statusJson.mic.online -and
+        $statusJson.adc.online -and
+        (Test-PropertyPresent -Object $statusJson.adc -Name 'pin') -and
+        (Test-PropertyPresent -Object $statusJson.adc -Name 'raw') -and
+        (Test-PropertyPresent -Object $statusJson.adc -Name 'millivolts') -and
+        (Test-PropertyPresent -Object $statusJson.adc -Name 'voltage_v') -and
+        (Test-PropertyPresent -Object $statusJson.adc -Name 'scale') -and
         $statusJson.camera.online -and
         $statusJson.speaker.online -and
         $speakerDiagnosticsOk -and
@@ -1421,8 +1467,10 @@ try {
 
     $historyText = Invoke-Curl ('http://' + $ip + '/api/history')
     $historyJson = $historyText | ConvertFrom-Json
-    $historyOk = ($historyJson.rows.Count -ge 1) -and ($null -ne $historyJson.rows[0].cpu_usage_pct)
-    Add-Result 'API History' $historyOk ('rows=' + $historyJson.rows.Count)
+    $historyOk = ($historyJson.rows.Count -ge 1) -and
+        (Test-PropertyPresent -Object $historyJson.rows[0] -Name 'cpu_usage_pct') -and
+        (Test-PropertyPresent -Object $historyJson.rows[0] -Name 'adc_voltage_v')
+    Add-Result 'API History' $historyOk ('rows={0} adc_first={1}' -f $historyJson.rows.Count, (Get-PropertyValue -Object $historyJson.rows[0] -Name 'adc_voltage_v' -Default '(missing)'))
 
     $htmlText = Invoke-Curl ('http://' + $ip + '/') -TimeoutSeconds 35
     $htmlOk = $htmlText.Contains('ESP32 多传感器看板') -and
@@ -1443,6 +1491,9 @@ try {
         $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('/api/config') -and
         $htmlText.Contains('查看 CSV 日志') -and
+        $htmlText.Contains('输入电压 ADC') -and
+        $htmlText.Contains('adcVoltage') -and
+        $htmlText.Contains('adcState') -and
         $htmlText.Contains('CPU 使用率') -and
         $htmlText.Contains('只接受十进制') -and
         $htmlText.Contains('ES8388 音频') -and
@@ -1507,17 +1558,17 @@ $reportLines += ('Overall: **' + $overallText + '**')
 $reportLines += ''
 $reportLines += '## BDD Scenarios'
 $reportLines += '- Firmware builds and uploads with Arduino CLI using OPI PSRAM enabled'
-$reportLines += '- Live dashboard exposes sensor telemetry, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
+$reportLines += '- Live dashboard exposes sensor telemetry, ADC input voltage, MC5640 camera status, CPU status, LCD state, health, alerts, persistent config, board speaker verification state, and board speaker playback evidence'
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- LCD recovery can be triggered without a board power-cycle, holds a high-contrast visible pixel test pattern, and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
 $reportLines += '- Camera JPEG capture, OPI PSRAM availability, effective camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
-$reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh and keeps full status/history snapshots at 10s'
+$reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh, including ADC input voltage, and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
-$reportLines += '- LittleFS data and config survive a board reboot'
+$reportLines += '- LittleFS ADC voltage data and config survive a board reboot'
 $reportLines += '- Short soak verifies continued sampling, storage writes and heap stability'
 $reportLines += '- Host USB camera capture is optional and skipped unless requested'
 $reportLines += ''

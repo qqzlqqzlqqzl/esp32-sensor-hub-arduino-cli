@@ -32,6 +32,14 @@
 #define WIFI_STA_PASS ""
 #endif
 
+#ifndef ADC_VOLTAGE_PIN
+#define ADC_VOLTAGE_PIN 8
+#endif
+
+#ifndef ADC_VOLTAGE_SCALE
+#define ADC_VOLTAGE_SCALE 1.0f
+#endif
+
 extern uint32_t g_back_color;
 
 namespace {
@@ -45,6 +53,7 @@ constexpr unsigned long kDhtIntervalMs = 4000;
 constexpr unsigned long kLightIntervalMs = 1000;
 constexpr unsigned long kAccelIntervalMs = 800;
 constexpr unsigned long kMicIntervalMs = 1500;
+constexpr unsigned long kAdcIntervalMs = 1000;
 constexpr unsigned long kChipTempIntervalMs = 5000;
 constexpr unsigned long kSystemIntervalMs = 2000;
 constexpr unsigned long kDisplayIntervalMs = 2500;
@@ -66,8 +75,10 @@ constexpr char kConfigTmpPath[] = "/hub_config.tmp";
 constexpr char kConfigBackupPath[] = "/hub_config.bak";
 constexpr size_t kMaxLogFileBytes = 512 * 1024;
 constexpr size_t kMaxPendingLogBytes = 24 * 1024;
-constexpr size_t kMaxLogLineLength = 420;
+constexpr size_t kMaxLogLineLength = 520;
 constexpr size_t kRuntimeTrackCapacity = 32;
+constexpr uint8_t kAdcVoltagePin = ADC_VOLTAGE_PIN;
+constexpr float kAdcVoltageScale = ADC_VOLTAGE_SCALE;
 
 constexpr char kStaSsid[] = WIFI_STA_SSID;
 constexpr char kStaPass[] = WIFI_STA_PASS;
@@ -95,6 +106,18 @@ struct ChipTempState {
   unsigned long lastUpdateMs = 0;
 } gChipTemp;
 
+struct AdcVoltageState {
+  bool online = false;
+  uint8_t pin = kAdcVoltagePin;
+  uint16_t raw = 0;
+  uint32_t millivolts = 0;
+  float voltage = 0.0f;
+  float scale = kAdcVoltageScale;
+  uint32_t success = 0;
+  uint32_t failure = 0;
+  unsigned long lastUpdateMs = 0;
+} gAdcVoltage;
+
 Ap3216cReading gLight;
 Qma6100pReading gAccel;
 MicLevelReading gMic;
@@ -108,6 +131,7 @@ bool gLittleFsReady = false;
 bool gLittleFsMountError = false;
 bool gChipTempReady = false;
 bool gDisplayReady = false;
+bool gAdcReady = false;
 bool gSpeakerTestRequested = false;
 bool gSpeakTemperatureRequested = false;
 bool gRebootRequested = false;
@@ -232,6 +256,10 @@ struct SampleRow {
   float micDbfs = -120.0f;
   float micRms = 0.0f;
   int16_t micPeak = 0;
+  bool adcOnline = false;
+  uint16_t adcRaw = 0;
+  uint32_t adcMillivolts = 0;
+  float adcVoltage = 0.0f;
   float cpuUsagePct = 0.0f;
   uint32_t freeHeapBytes = 0;
   uint32_t minFreeHeapBytes = 0;
@@ -518,6 +546,11 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="meta" id="chipState">离线</div>
       </section>
       <section class="card span-3">
+        <div class="label">输入电压 ADC</div>
+        <div class="value sm" id="adcVoltage">--</div>
+        <div class="meta" id="adcState">GPIO --</div>
+      </section>
+      <section class="card span-3">
         <div class="label">可用堆内存</div>
         <div class="value sm" id="heapFree">--</div>
         <div class="meta" id="heapState">min -- / max alloc --</div>
@@ -656,7 +689,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="label">最近持久化样本</div>
         <table>
           <thead>
-            <tr><th>时间</th><th>DHT</th><th>光照</th><th>声音</th><th>系统</th></tr>
+            <tr><th>时间</th><th>DHT</th><th>光照</th><th>声音</th><th>输入电压</th><th>系统</th></tr>
           </thead>
           <tbody id="rows"></tbody>
         </table>
@@ -683,6 +716,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       motionState: document.getElementById('motionState'),
       chipTemp: document.getElementById('chipTemp'),
       chipState: document.getElementById('chipState'),
+      adcVoltage: document.getElementById('adcVoltage'),
+      adcState: document.getElementById('adcState'),
       heapFree: document.getElementById('heapFree'),
       heapState: document.getElementById('heapState'),
       persistedCount: document.getElementById('persistedCount'),
@@ -870,6 +905,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
           <td>${row.dht_online ? `${fmtNum(row.dht_temp_c)}C / ${fmtNum(row.dht_humidity)}%` : 'offline'}</td>
           <td>${row.light_online ? `ALS ${row.als} / IR ${row.ir}` : 'offline'}</td>
           <td>${row.mic_online ? `${fmtNum(row.mic_dbfs)} dBFS` : 'offline'}</td>
+          <td>${row.adc_online ? `${fmtNum(row.adc_voltage_v, 3)} V` : 'offline'}</td>
           <td>CPU ${fmtNum(row.cpu_usage_pct)}% / Heap ${fmtBytes(row.free_heap_bytes)}</td>
         </tr>
       `).join('');
@@ -1168,6 +1204,11 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.chipTemp.textContent = status.chip_temp.online ? `${fmtNum(status.chip_temp.temp_c)} °C` : '--';
       statusEls.chipState.textContent = `Chip Temp ${fmtBool(status.chip_temp.online)}`;
       statusEls.chipState.className = `meta ${status.chip_temp.online ? 'ok' : 'bad'}`;
+      statusEls.adcVoltage.textContent = status.adc && status.adc.online ? `${fmtNum(status.adc.voltage_v, 3)} V` : '--';
+      statusEls.adcState.textContent = status.adc
+        ? `GPIO${status.adc.pin} raw ${status.adc.raw} / pin ${status.adc.millivolts} mV / scale ${fmtNum(status.adc.scale, 2)}`
+        : 'ADC offline';
+      statusEls.adcState.className = `meta ${status.adc && status.adc.online ? 'ok' : 'bad'}`;
       statusEls.heapFree.textContent = fmtBytes(status.system.free_heap_bytes);
       statusEls.heapState.textContent = `min ${fmtBytes(status.system.min_free_heap_bytes)} / max alloc ${fmtBytes(status.system.max_alloc_heap_bytes)}`;
       statusEls.persistedCount.textContent = status.storage.persisted_samples;
@@ -1255,6 +1296,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       drawMultiLine(charts.env, labels, [
         { name: 'ALS', color: '#ffd166', data: rows.map(row => row.light_online ? row.als : null) },
         { name: 'dBFS', color: '#b289ff', data: rows.map(row => row.mic_online ? row.mic_dbfs : null) },
+        { name: 'VIN', color: '#62d699', data: rows.map(row => row.adc_online ? row.adc_voltage_v : null) },
       ]);
       drawMultiLine(charts.motion, labels, [
         { name: 'g', color: '#62d699', data: rows.map(row => row.accel_online ? row.ag : null) },
@@ -2010,9 +2052,10 @@ void updateDisplayIfDue() {
       lcdPrintLine(70, LCD_FONT_16, RED, "CPU %.1f %%", gSystem.cpuUsagePct);
       lcdPrintLine(92, LCD_FONT_16, LIGHTGREEN, "HEAP %.1f KB", gSystem.freeHeapBytes / 1024.0f);
       lcdPrintLine(114, LCD_FONT_16, LIGHTGREEN, "MIN %.1f KB", gSystem.minFreeHeapBytes / 1024.0f);
-      lcdPrintLine(136, LCD_FONT_12, WHITE, "SPK %s D%.1f", speakerVerificationState(), gSpeaker.deltaDbfs);
-      lcdPrintLine(152, LCD_FONT_12, WHITE, "CPU %luMHz RSSI %ld", static_cast<unsigned long>(gSystem.cpuFreqMhz), static_cast<long>(gSystem.wifiRssiDbm));
-      lcdPrintLine(168, LCD_FONT_12, WHITE, "UP %lus SAY %lu", static_cast<unsigned long>(gSystem.uptimeSec), static_cast<unsigned long>(gSpeaker.speakCount));
+      lcdPrintLine(136, LCD_FONT_12, WHITE, "VIN %.3fV GPIO%u", gAdcVoltage.voltage, static_cast<unsigned int>(gAdcVoltage.pin));
+      lcdPrintLine(152, LCD_FONT_12, WHITE, "SPK %s D%.1f", speakerVerificationState(), gSpeaker.deltaDbfs);
+      lcdPrintLine(168, LCD_FONT_12, WHITE, "CPU %luMHz RSSI %ld", static_cast<unsigned long>(gSystem.cpuFreqMhz), static_cast<long>(gSystem.wifiRssiDbm));
+      lcdPrintLine(184, LCD_FONT_12, WHITE, "UP %lus SAY %lu", static_cast<unsigned long>(gSystem.uptimeSec), static_cast<unsigned long>(gSpeaker.speakCount));
       break;
     default:
       lcdPrintLine(70, LCD_FONT_16, CYAN, "SAVE %lu", static_cast<unsigned long>(gPersistedSamples));
@@ -2071,10 +2114,10 @@ void rotateLogIfNeeded() {
 }
 
 void appendLog(const SampleRow &row) {
-  char line[420];
+  char line[520];
   snprintf(line,
            sizeof(line),
-           "%lu,%lu,%d,%.2f,%.2f,%d,%.2f,%d,%u,%u,%u,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%.2f,%.5f,%d,%.2f,%lu,%lu,%lu,%u,%u,%u\n",
+           "%lu,%lu,%d,%.2f,%.2f,%d,%.2f,%d,%u,%u,%u,%d,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%.2f,%.5f,%d,%d,%u,%lu,%.4f,%.2f,%lu,%lu,%lu,%u,%u,%u\n",
            static_cast<unsigned long>(row.seq),
            static_cast<unsigned long>(row.epoch),
            row.dhtOnline ? 1 : 0,
@@ -2097,6 +2140,10 @@ void appendLog(const SampleRow &row) {
            row.micDbfs,
            row.micRms,
            row.micPeak,
+           row.adcOnline ? 1 : 0,
+           row.adcRaw,
+           static_cast<unsigned long>(row.adcMillivolts),
+           row.adcVoltage,
            row.cpuUsagePct,
            static_cast<unsigned long>(row.freeHeapBytes),
            static_cast<unsigned long>(row.minFreeHeapBytes),
@@ -2165,9 +2212,12 @@ bool parseLogLine(const char *line, SampleRow *row) {
   int accelOnline = 0;
   int micOnline = 0;
   int micPeak = 0;
+  int adcOnline = 0;
   unsigned int als = 0;
   unsigned int ir = 0;
   unsigned int ps = 0;
+  unsigned int adcRaw = 0;
+  unsigned long adcMillivolts = 0;
   float dhtTemp = 0.0f;
   float dhtHumidity = 0.0f;
   float chipTemp = 0.0f;
@@ -2179,6 +2229,7 @@ bool parseLogLine(const char *line, SampleRow *row) {
   float roll = 0.0f;
   float micDbfs = 0.0f;
   float micRms = 0.0f;
+  float adcVoltage = 0.0f;
   float cpuUsagePct = 0.0f;
   unsigned long freeHeapBytes = 0;
   unsigned long minFreeHeapBytes = 0;
@@ -2188,7 +2239,7 @@ bool parseLogLine(const char *line, SampleRow *row) {
   unsigned int alertCount = 0;
 
   int parsed = sscanf(line,
-                      "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u,%u",
+                      "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%d,%u,%lu,%f,%f,%lu,%lu,%lu,%u,%u,%u",
                       &seq,
                       &epoch,
                       &dhtOnline,
@@ -2211,6 +2262,10 @@ bool parseLogLine(const char *line, SampleRow *row) {
                       &micDbfs,
                       &micRms,
                       &micPeak,
+                      &adcOnline,
+                      &adcRaw,
+                      &adcMillivolts,
+                      &adcVoltage,
                       &cpuUsagePct,
                       &freeHeapBytes,
                       &minFreeHeapBytes,
@@ -2218,7 +2273,7 @@ bool parseLogLine(const char *line, SampleRow *row) {
                       &cpuFreqMhz,
                       &displayPage,
                       &alertCount);
-  if (parsed != 29) {
+  if (parsed != 33) {
     parsed = sscanf(line,
                     "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d,%f,%lu,%lu,%lu,%u,%u",
                     &seq,
@@ -2250,7 +2305,7 @@ bool parseLogLine(const char *line, SampleRow *row) {
                     &cpuFreqMhz,
                     &displayPage);
   }
-  if (parsed != 28 && parsed != 29) {
+  if (parsed != 28 && parsed != 29 && parsed != 33) {
     parsed = sscanf(line,
                     "%lu,%lu,%d,%f,%f,%d,%f,%d,%u,%u,%u,%d,%f,%f,%f,%f,%f,%f,%d,%f,%f,%d",
                     &seq,
@@ -2276,7 +2331,7 @@ bool parseLogLine(const char *line, SampleRow *row) {
                     &micRms,
                     &micPeak);
   }
-  if (parsed != 22 && parsed != 28 && parsed != 29) {
+  if (parsed != 22 && parsed != 28 && parsed != 29 && parsed != 33) {
     return false;
   }
 
@@ -2302,6 +2357,10 @@ bool parseLogLine(const char *line, SampleRow *row) {
   row->micDbfs = micDbfs;
   row->micRms = micRms;
   row->micPeak = static_cast<int16_t>(micPeak);
+  row->adcOnline = adcOnline == 1;
+  row->adcRaw = static_cast<uint16_t>(adcRaw);
+  row->adcMillivolts = static_cast<uint32_t>(adcMillivolts);
+  row->adcVoltage = adcVoltage;
   row->cpuUsagePct = cpuUsagePct;
   row->freeHeapBytes = static_cast<uint32_t>(freeHeapBytes);
   row->minFreeHeapBytes = static_cast<uint32_t>(minFreeHeapBytes);
@@ -2483,6 +2542,15 @@ void initChipTemperature() {
   }
 }
 
+void initAdcVoltage() {
+  pinMode(kAdcVoltagePin, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(kAdcVoltagePin, ADC_11db);
+  gAdcVoltage.pin = kAdcVoltagePin;
+  gAdcVoltage.scale = kAdcVoltageScale;
+  gAdcReady = true;
+}
+
 void initNetwork() {
   const unsigned long startedAt = millis();
   WiFi.mode(WIFI_AP_STA);
@@ -2571,6 +2639,32 @@ void readMicIfDue() {
   if (!es8388codec::readMicLevel(&gMic)) {
     gMic.online = false;
   }
+}
+
+void readAdcVoltageIfDue() {
+  static unsigned long lastRead = 0;
+  static bool firstRead = true;
+  if (!gAdcReady || (!firstRead && millis() - lastRead < kAdcIntervalMs)) {
+    return;
+  }
+  firstRead = false;
+  lastRead = millis();
+
+  constexpr uint8_t kSamples = 16;
+  uint32_t rawSum = 0;
+  uint32_t millivoltSum = 0;
+  for (uint8_t i = 0; i < kSamples; i++) {
+    rawSum += analogRead(kAdcVoltagePin);
+    millivoltSum += analogReadMilliVolts(kAdcVoltagePin);
+    delayMicroseconds(200);
+  }
+
+  gAdcVoltage.raw = static_cast<uint16_t>(rawSum / kSamples);
+  gAdcVoltage.millivolts = millivoltSum / kSamples;
+  gAdcVoltage.voltage = (static_cast<float>(gAdcVoltage.millivolts) / 1000.0f) * kAdcVoltageScale;
+  gAdcVoltage.online = true;
+  gAdcVoltage.success++;
+  gAdcVoltage.lastUpdateMs = millis();
 }
 
 bool speakTemperatureOnBoard() {
@@ -2668,6 +2762,10 @@ void publishSampleIfDue() {
   row.micDbfs = gMic.dbfs;
   row.micRms = gMic.rms;
   row.micPeak = gMic.peak;
+  row.adcOnline = gAdcVoltage.online;
+  row.adcRaw = gAdcVoltage.raw;
+  row.adcMillivolts = gAdcVoltage.millivolts;
+  row.adcVoltage = gAdcVoltage.voltage;
   row.cpuUsagePct = gSystem.cpuUsagePct;
   row.freeHeapBytes = gSystem.freeHeapBytes;
   row.minFreeHeapBytes = gSystem.minFreeHeapBytes;
@@ -2847,9 +2945,29 @@ void appendCameraJson(String &json) {
   json += "}";
 }
 
+void appendAdcJson(String &json) {
+  json += "\"adc\":{\"online\":";
+  json += gAdcVoltage.online ? "true" : "false";
+  json += ",\"pin\":";
+  json += String(gAdcVoltage.pin);
+  json += ",\"raw\":";
+  json += String(gAdcVoltage.raw);
+  json += ",\"millivolts\":";
+  json += String(gAdcVoltage.millivolts);
+  json += ",\"voltage_v\":";
+  json += String(gAdcVoltage.voltage, 4);
+  json += ",\"scale\":";
+  json += String(gAdcVoltage.scale, 4);
+  json += ",\"success_count\":";
+  json += String(gAdcVoltage.success);
+  json += ",\"failure_count\":";
+  json += String(gAdcVoltage.failure);
+  json += "}";
+}
+
 String statusJson() {
   String json;
-  json.reserve(2600);
+  json.reserve(3000);
   json += "{";
   json += "\"network\":{\"mode\":\"";
   json += currentNetworkMode();
@@ -2966,6 +3084,8 @@ String statusJson() {
   json += ",\"peak\":";
   json += String(gMic.peak);
   json += "},";
+  appendAdcJson(json);
+  json += ",";
   json += "\"system\":{\"runtime_ready\":";
   json += gSystem.runtimeReady ? "true" : "false";
   json += ",\"cpu_usage_pct\":";
@@ -3059,7 +3179,7 @@ String statusJson() {
 
 String historyJson() {
   String json;
-  json.reserve(12288);
+  json.reserve(18000);
   json += "{\"rows\":[";
   const size_t maxRows = gHistoryCount > 60 ? 60 : gHistoryCount;
   const size_t start = gHistoryCount > 60 ? gHistoryCount - 60 : 0;
@@ -3111,6 +3231,14 @@ String historyJson() {
     json += String(row.micDbfs, 2);
     json += ",\"mic_rms\":";
     json += String(row.micRms, 5);
+    json += ",\"adc_online\":";
+    json += row.adcOnline ? "true" : "false";
+    json += ",\"adc_raw\":";
+    json += String(row.adcRaw);
+    json += ",\"adc_millivolts\":";
+    json += String(row.adcMillivolts);
+    json += ",\"adc_voltage_v\":";
+    json += String(row.adcVoltage, 4);
     json += ",\"cpu_usage_pct\":";
     json += String(row.cpuUsagePct, 2);
     json += ",\"free_heap_bytes\":";
@@ -3138,7 +3266,7 @@ String liveJson() {
   }
 
   String json;
-  json.reserve(1900);
+  json.reserve(2300);
   gLiveJsonBuildCount++;
   json += "{\"network\":{\"mode\":\"";
   json += currentNetworkMode();
@@ -3225,7 +3353,9 @@ String liveJson() {
   json += String(gMic.rms, 5);
   json += ",\"peak\":";
   json += String(gMic.peak);
-  json += "},\"system\":{\"runtime_ready\":";
+  json += "},";
+  appendAdcJson(json);
+  json += ",\"system\":{\"runtime_ready\":";
   json += gSystem.runtimeReady ? "true" : "false";
   json += ",\"cpu_usage_pct\":";
   json += String(gSystem.cpuUsagePct, 2);
@@ -3283,14 +3413,15 @@ String liveJson() {
 
 String healthJson() {
   const bool storageOk = gLittleFsReady && gStorageWriteFailures == 0 && gDroppedSamples == 0;
-  const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && gDisplayReady;
+  const bool adcOk = gAdcVoltage.online;
+  const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && adcOk && gDisplayReady;
   const bool speakerOk = gSpeaker.online && gSpeaker.loopbackPassed;
   const bool cameraOk = boardcamera::isReady();
   const bool ok = storageOk && sensorsOk && speakerOk && cameraOk && !gAlerts.active;
   const char *state = ok ? "OK" : (gAlerts.active ? "ALERT" : "DEGRADED");
 
   String json;
-  json.reserve(760);
+  json.reserve(900);
   json += "{\"ok\":";
   json += ok ? "true" : "false";
   json += ",\"status\":\"";
@@ -3315,6 +3446,8 @@ String healthJson() {
   json += speakerOk ? "true" : "false";
   json += ",\"camera_ok\":";
   json += cameraOk ? "true" : "false";
+  json += ",\"adc_ok\":";
+  json += adcOk ? "true" : "false";
   json += ",\"alerts_active\":";
   json += gAlerts.active ? "true" : "false";
   json += ",\"alert_count\":";
@@ -4272,7 +4405,7 @@ void printStatusReport() {
                 currentDashboardIp().c_str(),
                 kApSsid);
   Serial.printf("[URL] %s/api/status\n", currentDashboardIp().c_str());
-  Serial.printf("[LIVE] dht=%s %.1fC %.1f%% | als=%u ir=%u ps=%u | mic=%s %.2fdBFS peak=%d | spk=%s off=%.1f on=%.1f d=%.1f say=%lu | qma=%s g=%.2f p=%.1f r=%.1f | chip=%s %.2fC | cpu=%.1f%% heap=%luKB | fs=%u/%u persisted=%lu pending=%u fail=%lu drop=%lu | lcd=%s p%u\n",
+  Serial.printf("[LIVE] dht=%s %.1fC %.1f%% | als=%u ir=%u ps=%u | mic=%s %.2fdBFS peak=%d | adc=%s %.3fV pin=%u raw=%u mv=%lu scale=%.2f | spk=%s off=%.1f on=%.1f d=%.1f say=%lu | qma=%s g=%.2f p=%.1f r=%.1f | chip=%s %.2fC | cpu=%.1f%% heap=%luKB | fs=%u/%u persisted=%lu pending=%u fail=%lu drop=%lu | lcd=%s p%u\n",
                 gDht.online ? "on" : "off",
                 gDht.tempC,
                 gDht.humidity,
@@ -4282,6 +4415,12 @@ void printStatusReport() {
                 gMic.online ? "on" : "off",
                 gMic.dbfs,
                 gMic.peak,
+                gAdcVoltage.online ? "on" : "off",
+                gAdcVoltage.voltage,
+                static_cast<unsigned int>(gAdcVoltage.pin),
+                static_cast<unsigned int>(gAdcVoltage.raw),
+                static_cast<unsigned long>(gAdcVoltage.millivolts),
+                gAdcVoltage.scale,
                 speakerVerificationState(),
                 gSpeaker.mutedDbfs,
                 gSpeaker.enabledDbfs,
@@ -4353,6 +4492,7 @@ void setup() {
   gQmaReady = qma6100p::begin();
   gMicReady = es8388codec::beginMic();
   gSpeaker.online = gMicReady && es8388codec::isReady();
+  initAdcVoltage();
   boardcamera::begin();
   gBoot.sensorsInitMs = millis() - sensorsStartedAt;
 
@@ -4362,6 +4502,7 @@ void setup() {
   readAp3216IfDue();
   readQmaIfDue();
   readMicIfDue();
+  readAdcVoltageIfDue();
   updateAlerts();
   updateDisplayIfDue();
   gBoot.setupCompleteMs = millis();
@@ -4383,6 +4524,7 @@ void loop() {
   readAp3216IfDue();
   readQmaIfDue();
   readMicIfDue();
+  readAdcVoltageIfDue();
   updateAlerts();
   runSpeakerActionsIfDue();
   publishSampleIfDue();
