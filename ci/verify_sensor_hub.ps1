@@ -60,7 +60,14 @@ function Invoke-Curl {
         [string]$Url,
         [int]$TimeoutSeconds = 10
     )
-    (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS $Url | Out-String)
+    $output = (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS $Url 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        throw ('curl failed exit={0} url={1} output={2}' -f $LASTEXITCODE, $Url, $output.Trim())
+    }
+    if (-not $output.Trim()) {
+        throw ('curl returned an empty response for {0}' -f $Url)
+    }
+    return $output.Trim()
 }
 
 function Invoke-CurlPost {
@@ -68,7 +75,14 @@ function Invoke-CurlPost {
         [string]$Url,
         [int]$TimeoutSeconds = 10
     )
-    (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS -X POST $Url | Out-String)
+    $output = (& curl.exe --noproxy '*' --connect-timeout $TimeoutSeconds --max-time $TimeoutSeconds -sS -X POST $Url 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        throw ('curl failed exit={0} url={1} output={2}' -f $LASTEXITCODE, $Url, $output.Trim())
+    }
+    if (-not $output.Trim()) {
+        throw ('curl returned an empty response for {0}' -f $Url)
+    }
+    return $output.Trim()
 }
 
 function Get-PropertyValue {
@@ -132,13 +146,14 @@ function Resolve-DashboardEndpoint {
 
     foreach ($candidate in $candidates) {
         try {
-            $statusText = Invoke-Curl -Url ('http://' + $candidate + '/api/status') -TimeoutSeconds 6
-            $statusJson = $statusText | ConvertFrom-Json
-            return [pscustomobject]@{
-                SelectedIp = $candidate
-                StatusText = $statusText
-                StatusJson = $statusJson
-                Details = ('Detected dashboard IP {0} from serial URLs [{1}]' -f $candidate, ($candidates -join ', '))
+            $status = Wait-DashboardStatus -Ip $candidate -TimeoutSeconds 45
+            if ($status.Passed) {
+                return [pscustomobject]@{
+                    SelectedIp = $candidate
+                    StatusText = $status.StatusText
+                    StatusJson = $status.StatusJson
+                    Details = ('Detected dashboard IP {0} from serial URLs [{1}] after API readiness wait' -f $candidate, ($candidates -join ', '))
+                }
             }
         }
         catch {
