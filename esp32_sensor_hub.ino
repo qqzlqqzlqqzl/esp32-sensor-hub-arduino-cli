@@ -1039,9 +1039,10 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       const res = await fetch(`/api/camera/preset?${params.toString()}`, { method: 'POST', cache: 'no-store' });
       const json = await res.json().catch(() => ({}));
       clearAllCameraControlEditing();
-      statusEls.cameraMeta.textContent = json.applied
+      const verified = json.success === true && json.verified === true;
+      statusEls.cameraMeta.textContent = verified
         ? `一键预设已生效：${json.label || preset} / ${json.verified_count}/${json.control_count}`
-        : `一键预设失败：${json.error || res.status}`;
+        : `一键预设未生效：${json.error || res.status} / ${json.verified_count || 0}/${json.control_count || 0}`;
       setTimeout(refreshLive, 300);
     }
 

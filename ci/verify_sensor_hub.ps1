@@ -916,7 +916,9 @@ function Test-DashboardEditLockImplementation {
         'updateCameraControlFromStatus(statusEls.camFrameSize',
         'clearAllCameraControlEditing',
         'data-camera-preset',
-        '/api/camera/preset'
+        '/api/camera/preset',
+        'json.success === true && json.verified === true',
+        '一键预设未生效'
     )
     $missing = @($requiredMarkers | Where-Object { -not $HtmlText.Contains($_) })
     $directOverwritePatterns = @(

@@ -9,6 +9,7 @@ namespace {
 
 BoardCameraStatus gCamera;
 SemaphoreHandle_t gCameraMutex = nullptr;
+bool gRecoverAfterRelease = false;
 constexpr uint32_t kCaptureRecoveryTimeoutMs = 3500;
 constexpr uint32_t kCaptureRecoveryFailureThreshold = 2;
 
@@ -235,7 +236,11 @@ camera_fb_t *capture() {
     return nullptr;
   }
 
-  gCamera.consecutiveCaptureFailures = 0;
+  if (gCamera.lastCaptureDurationMs >= kCaptureRecoveryTimeoutMs) {
+    gRecoverAfterRelease = true;
+  } else {
+    gCamera.consecutiveCaptureFailures = 0;
+  }
   gCamera.captureCount++;
   gCamera.lastCaptureMs = millis();
   gCamera.lastFrameBytes = frame->len;
@@ -247,6 +252,10 @@ camera_fb_t *capture() {
 void release(camera_fb_t *frame) {
   if (frame) {
     esp_camera_fb_return(frame);
+  }
+  if (gRecoverAfterRelease) {
+    gRecoverAfterRelease = false;
+    recoverCameraLocked();
   }
   unlockCamera();
 }
