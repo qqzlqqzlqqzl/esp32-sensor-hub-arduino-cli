@@ -8,6 +8,14 @@
 #define DHT11_DQ_PIN GPIO_NUM_0
 #endif
 
+struct Dht11RawReading {
+  uint8_t humidityInteger = 0;
+  uint8_t humidityDecimal = 0;
+  uint8_t temperatureInteger = 0;
+  uint8_t temperatureDecimal = 0;
+  uint8_t checksum = 0;
+};
+
 #define DHT11_DQ_OUT(x) gpio_set_level(DHT11_DQ_PIN, x)
 #define DHT11_DQ_IN gpio_get_level(DHT11_DQ_PIN)
 #define DHT11_MODE_IN gpio_set_direction(DHT11_DQ_PIN, GPIO_MODE_INPUT)
@@ -16,5 +24,6 @@
 uint8_t dht11_init(void);
 uint8_t dht11_check(void);
 uint8_t dht11_read_data(uint8_t *temp, uint8_t *humi);
+uint8_t dht11_read_raw(Dht11RawReading *reading);
 
 #endif

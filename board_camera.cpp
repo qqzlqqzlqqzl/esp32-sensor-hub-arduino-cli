@@ -10,8 +10,21 @@ namespace {
 BoardCameraStatus gCamera;
 SemaphoreHandle_t gCameraMutex = nullptr;
 bool gRecoverAfterRelease = false;
+volatile bool gControlPending = false;
 constexpr uint32_t kCaptureRecoveryTimeoutMs = 3500;
 constexpr uint32_t kCaptureRecoveryFailureThreshold = 2;
+constexpr TickType_t kCameraControlLockTimeout = pdMS_TO_TICKS(1800);
+constexpr size_t kMaxDesiredControls = 24;
+
+struct DesiredCameraControl {
+  char name[20] = "";
+  int value = 0;
+};
+
+DesiredCameraControl gDesiredControls[kMaxDesiredControls];
+size_t gDesiredControlCount = 0;
+
+void reapplyDesiredControlsUnlocked(sensor_t *sensor);
 
 constexpr int kPinD0 = 4;
 constexpr int kPinD1 = 5;
@@ -123,6 +136,7 @@ bool initCameraLocked() {
   }
 
   gCamera.consecutiveCaptureFailures = 0;
+  reapplyDesiredControlsUnlocked(esp_camera_sensor_get());
   refreshStatusFromSensor();
   return gCamera.online;
 }
@@ -165,6 +179,43 @@ bool applyControlUnlocked(sensor_t *sensor, const String &name, int value) {
   if (name == "raw_gma") return sensor->set_raw_gma && sensor->set_raw_gma(sensor, value ? 1 : 0) == 0;
   if (name == "lenc") return sensor->set_lenc && sensor->set_lenc(sensor, value ? 1 : 0) == 0;
   return false;
+}
+
+int findDesiredControl(const char *name) {
+  if (!name || !name[0]) {
+    return -1;
+  }
+  for (size_t i = 0; i < gDesiredControlCount; i++) {
+    if (strncmp(gDesiredControls[i].name, name, sizeof(gDesiredControls[i].name)) == 0) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+void rememberDesiredControl(const char *name, int value) {
+  if (!name || !name[0]) {
+    return;
+  }
+  int index = findDesiredControl(name);
+  if (index < 0) {
+    if (gDesiredControlCount >= kMaxDesiredControls) {
+      return;
+    }
+    index = static_cast<int>(gDesiredControlCount++);
+    snprintf(gDesiredControls[index].name, sizeof(gDesiredControls[index].name), "%s", name);
+  }
+  gDesiredControls[index].value = value;
+}
+
+void reapplyDesiredControlsUnlocked(sensor_t *sensor) {
+  if (!sensor) {
+    return;
+  }
+  for (size_t i = 0; i < gDesiredControlCount; i++) {
+    applyControlUnlocked(sensor, String(gDesiredControls[i].name), gDesiredControls[i].value);
+    delay(15);
+  }
 }
 
 bool lockCamera(TickType_t timeoutTicks) {
@@ -213,6 +264,9 @@ const BoardCameraStatus &status() {
 }
 
 camera_fb_t *capture() {
+  if (gControlPending) {
+    return nullptr;
+  }
   if (!gCamera.online) {
     gCamera.captureFailures++;
     return nullptr;
@@ -261,7 +315,9 @@ void release(camera_fb_t *frame) {
 }
 
 bool setControl(const String &name, int value) {
-  if (!lockCamera(pdMS_TO_TICKS(250))) {
+  gControlPending = true;
+  if (!lockCamera(kCameraControlLockTimeout)) {
+    gControlPending = false;
     return false;
   }
   sensor_t *sensor = esp_camera_sensor_get();
@@ -270,6 +326,7 @@ bool setControl(const String &name, int value) {
     sensor = esp_camera_sensor_get();
     if (!sensor) {
       unlockCamera();
+      gControlPending = false;
       return false;
     }
   }
@@ -280,10 +337,61 @@ bool setControl(const String &name, int value) {
     sensor = esp_camera_sensor_get();
     ok = applyControlUnlocked(sensor, name, value);
   }
+  if (ok) {
+    rememberDesiredControl(name.c_str(), value);
+  }
 
   refreshStatusFromSensor();
   unlockCamera();
+  gControlPending = false;
   return ok;
+}
+
+bool setControls(const BoardCameraControl *controls, size_t count, size_t *appliedCount) {
+  if (appliedCount) {
+    *appliedCount = 0;
+  }
+  if (!controls || count == 0) {
+    return false;
+  }
+
+  gControlPending = true;
+  if (!lockCamera(kCameraControlLockTimeout)) {
+    gControlPending = false;
+    return false;
+  }
+
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (!sensor) {
+    recoverCameraLocked();
+    sensor = esp_camera_sensor_get();
+    if (!sensor) {
+      unlockCamera();
+      gControlPending = false;
+      return false;
+    }
+  }
+
+  size_t applied = 0;
+  bool ok = true;
+  for (size_t i = 0; i < count; i++) {
+    const BoardCameraControl &control = controls[i];
+    if (!control.name || !applyControlUnlocked(sensor, String(control.name), control.value)) {
+      ok = false;
+      break;
+    }
+    rememberDesiredControl(control.name, control.value);
+    applied++;
+    delay(20);
+  }
+
+  refreshStatusFromSensor();
+  unlockCamera();
+  gControlPending = false;
+  if (appliedCount) {
+    *appliedCount = applied;
+  }
+  return ok && applied == count;
 }
 
 bool readRegister(uint16_t reg, uint8_t mask, int *value) {

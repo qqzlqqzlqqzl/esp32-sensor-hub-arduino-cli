@@ -43,6 +43,13 @@ struct BoardCameraStatus {
   uint16_t lastHeight = 0;
 };
 
+struct BoardCameraControl {
+  const char *name;
+  int value;
+  BoardCameraControl(const char *controlName, int controlValue)
+      : name(controlName), value(controlValue) {}
+};
+
 namespace boardcamera {
 bool begin();
 bool isReady();
@@ -50,6 +57,7 @@ const BoardCameraStatus &status();
 camera_fb_t *capture();
 void release(camera_fb_t *frame);
 bool setControl(const String &name, int value);
+bool setControls(const BoardCameraControl *controls, size_t count, size_t *appliedCount);
 bool readRegister(uint16_t reg, uint8_t mask, int *value);
 bool writeRegister(uint16_t reg, uint8_t mask, uint8_t value);
 const char *frameSizeName(int frameSize);

@@ -65,7 +65,11 @@ static uint8_t dht11_read_byte(void) {
   return data;
 }
 
-uint8_t dht11_read_data(uint8_t *temp, uint8_t *humi) {
+uint8_t dht11_read_raw(Dht11RawReading *reading) {
+  if (!reading) {
+    return 1;
+  }
+
   uint8_t buf[5];
 
   dht11_reset();
@@ -86,8 +90,22 @@ uint8_t dht11_read_data(uint8_t *temp, uint8_t *humi) {
     return 1;
   }
 
-  *humi = buf[0];
-  *temp = buf[2];
+  reading->humidityInteger = buf[0];
+  reading->humidityDecimal = buf[1];
+  reading->temperatureInteger = buf[2];
+  reading->temperatureDecimal = buf[3];
+  reading->checksum = buf[4];
+  return 0;
+}
+
+uint8_t dht11_read_data(uint8_t *temp, uint8_t *humi) {
+  Dht11RawReading reading;
+  if (dht11_read_raw(&reading) != 0) {
+    return 1;
+  }
+
+  *humi = reading.humidityInteger;
+  *temp = reading.temperatureInteger;
   return 0;
 }
 

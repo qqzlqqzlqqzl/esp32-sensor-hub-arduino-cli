@@ -40,6 +40,10 @@
 #define ADC_VOLTAGE_SCALE 1.0f
 #endif
 
+#ifndef DHT_SENSOR_TYPE
+#define DHT_SENSOR_TYPE 11
+#endif
+
 extern uint32_t g_back_color;
 
 namespace {
@@ -90,11 +94,21 @@ volatile uint32_t gCameraStreamClients = 0;
 volatile uint32_t gCameraStreamFrameCount = 0;
 volatile uint32_t gCameraStreamLastFpsX100 = 0;
 volatile uint32_t gCameraStreamLastClientMs = 0;
+volatile bool gCameraStreamPaused = false;
+volatile uint32_t gCameraStreamPauseUntilMs = 0;
 
 struct DhtState {
   bool online = false;
   float tempC = 0.0f;
   float humidity = 0.0f;
+  uint8_t rawHumidityInteger = 0;
+  uint8_t rawHumidityDecimal = 0;
+  uint8_t rawTemperatureInteger = 0;
+  uint8_t rawTemperatureDecimal = 0;
+  uint8_t rawChecksum = 0;
+  bool decimalBytesPresent = false;
+  float resolutionC = DHT_SENSOR_TYPE == 22 ? 0.1f : 1.0f;
+  float resolutionHumidity = DHT_SENSOR_TYPE == 22 ? 0.1f : 1.0f;
   uint32_t success = 0;
   uint32_t failure = 0;
   unsigned long lastUpdateMs = 0;
@@ -609,31 +623,44 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
           <button class="btn" data-camera-preset="clear" type="button">清晰 QQVGA</button>
           <button class="btn" data-camera-preset="bright" type="button">弱光增强</button>
         </div>
-        <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option selected>QQVGA</option><option>QVGA</option><option>VGA</option><option>SVGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
-        <div class="control-row"><span>JPEG 质量</span><input id="camQuality" type="range" min="4" max="35" value="30"><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
-        <div class="control-row"><span>亮度</span><input id="camBrightness" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
-        <div class="control-row"><span>对比度</span><input id="camContrast" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="contrast" data-cam-input="camContrast" type="button">设</button></div>
-        <div class="control-row"><span>饱和度</span><input id="camSaturation" type="range" min="-2" max="2" value="0"><button class="btn" data-cam="saturation" data-cam-input="camSaturation" type="button">设</button></div>
+        <div class="control-row"><span>分辨率</span><select id="camFrameSize"><option selected>QQVGA</option><option>QVGA</option><option>VGA</option><option>SVGA</option><option>XGA</option></select><button class="btn" data-cam-select="framesize_name" data-cam-input="camFrameSize" type="button">设</button></div>
+        <div class="control-row"><span>JPEG 质量</span><select id="camQuality"><option value="4">4 最高画质</option><option value="8">8 高画质</option><option value="12">12 高画质</option><option value="18">18 清晰</option><option value="25">25 均衡</option><option value="30" selected>30 流畅</option><option value="35">35 低码率</option><option value="45">45 更低码率</option><option value="63">63 最低码率</option></select><button class="btn" data-cam="quality" data-cam-input="camQuality" type="button">设</button></div>
+        <div class="control-row"><span>亮度</span><select id="camBrightness"><option value="-2">-2 更暗</option><option value="-1">-1 偏暗</option><option value="0" selected>0 默认</option><option value="1">1 偏亮</option><option value="2">2 更亮</option></select><button class="btn" data-cam="brightness" data-cam-input="camBrightness" type="button">设</button></div>
+        <div class="control-row"><span>对比度</span><select id="camContrast"><option value="-2">-2 最低</option><option value="-1">-1 较低</option><option value="0" selected>0 默认</option><option value="1">1 较高</option><option value="2">2 最高</option></select><button class="btn" data-cam="contrast" data-cam-input="camContrast" type="button">设</button></div>
+        <div class="control-row"><span>饱和度</span><select id="camSaturation"><option value="-2">-2 最低</option><option value="-1">-1 较低</option><option value="0" selected>0 默认</option><option value="1">1 较高</option><option value="2">2 最高</option></select><button class="btn" data-cam="saturation" data-cam-input="camSaturation" type="button">设</button></div>
+        <div class="control-row"><span>锐度</span><select id="camSharpness"><option value="-2">-2 柔和</option><option value="-1">-1 偏柔</option><option value="0" selected>0 默认</option><option value="1">1 偏锐</option><option value="2">2 锐化</option></select><button class="btn" data-cam="sharpness" data-cam-input="camSharpness" type="button">设</button></div>
+        <div class="control-row"><span>特效</span><select id="camSpecialEffect"><option value="0" selected>0 无</option><option value="1">1 负片</option><option value="2">2 灰度</option><option value="3">3 红色</option><option value="4">4 绿色</option><option value="5">5 蓝色</option><option value="6">6 复古</option></select><button class="btn" data-cam="special_effect" data-cam-input="camSpecialEffect" type="button">设</button></div>
+        <div class="control-row"><span>白平衡模式</span><select id="camWbMode"><option value="0" selected>0 自动</option><option value="1">1 晴天</option><option value="2">2 阴天</option><option value="3">3 办公室</option><option value="4">4 家庭</option></select><button class="btn" data-cam="wb_mode" data-cam-input="camWbMode" type="button">设</button></div>
+        <div class="control-row"><span>自动白平衡</span><select id="camAwb"><option value="1" selected>开</option><option value="0">关</option></select><button class="btn" data-cam-select="awb" data-cam-input="camAwb" type="button">设</button></div>
+        <div class="control-row"><span>白平衡增益</span><select id="camAwbGain"><option value="0" selected>关</option><option value="1">开</option></select><button class="btn" data-cam-select="awb_gain" data-cam-input="camAwbGain" type="button">设</button></div>
         <div class="control-row"><span>自动曝光</span><select id="camAec"><option value="1">开</option><option value="0">关</option></select><button class="btn" data-cam-select="aec" data-cam-input="camAec" type="button">设</button></div>
-        <div class="control-row"><span>手动曝光值</span><input id="camAecValue" type="range" min="0" max="1200" value="300"><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
+        <div class="control-row"><span>二级自动曝光</span><select id="camAec2"><option value="0" selected>关</option><option value="1">开</option></select><button class="btn" data-cam-select="aec2" data-cam-input="camAec2" type="button">设</button></div>
+        <div class="control-row"><span>曝光补偿</span><select id="camAeLevel"><option value="-2">-2 更暗</option><option value="-1">-1 偏暗</option><option value="0" selected>0 默认</option><option value="1">1 偏亮</option><option value="2">2 更亮</option></select><button class="btn" data-cam="ae_level" data-cam-input="camAeLevel" type="button">设</button></div>
+        <div class="control-row"><span>手动曝光值</span><select id="camAecValue"><option value="0">0 最短</option><option value="150">150 较短</option><option value="300" selected>300 默认</option><option value="600">600 较长</option><option value="885">885 当前常见回读</option><option value="900">900 长曝光</option><option value="1200">1200 最长</option></select><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
         <div class="control-row"><span>自动增益</span><select id="camAgc"><option value="1">开</option><option value="0">关</option></select><button class="btn" data-cam-select="agc" data-cam-input="camAgc" type="button">设</button></div>
-        <div class="control-row"><span>手动增益值</span><input id="camAgcGain" type="range" min="0" max="30" value="0"><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
+        <div class="control-row"><span>手动增益值</span><select id="camAgcGain"><option value="0" selected>0 最低</option><option value="6">6 较低</option><option value="12">12 中等</option><option value="18">18 较高</option><option value="24">24 高</option><option value="30">30 最高</option></select><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
+        <div class="control-row"><span>增益上限</span><select id="camGainCeiling"><option value="0">0 2x</option><option value="1">1 4x</option><option value="2">2 8x</option><option value="3">3 16x</option><option value="4">4 32x</option><option value="5">5 64x</option><option value="6">6 128x</option></select><button class="btn" data-cam="gainceiling" data-cam-input="camGainCeiling" type="button">设</button></div>
         <div class="control-row"><span>镜像</span><select id="camMirror"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="hmirror" data-cam-input="camMirror" type="button">设</button></div>
         <div class="control-row"><span>翻转</span><select id="camVflip"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="vflip" data-cam-input="camVflip" type="button">设</button></div>
-        <div class="meta">摄像头设置每次写入后都会回读 /api/camera；只有显示“已生效”才算设置成功。拖动滑条或修改下拉框时，0.5 秒后台刷新不会覆盖正在编辑的值，点“设”或一键预设后才按硬件回读值同步。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
+        <div class="control-row"><span>彩条测试</span><select id="camColorbar"><option value="0" selected>关</option><option value="1">开</option></select><button class="btn" data-cam-select="colorbar" data-cam-input="camColorbar" type="button">设</button></div>
+        <div class="meta">摄像头设置每次写入前会暂停视频流并回读 /api/camera；只有显示“已生效”才算设置成功。拖动滑条或修改下拉框时，0.5 秒后台刷新不会覆盖正在编辑的值，点“设”或一键预设后才按硬件回读值同步。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
         <table>
           <tbody>
             <tr><th>设置项</th><th>十进制范围</th><th>说明</th></tr>
             <tr><td>JPEG 质量</td><td>4 到 63</td><td>数字越小画质越高，码流越大；20 帧优先建议 QQVGA 下 18 到 35。</td></tr>
             <tr><td>分辨率</td><td>QQVGA/QVGA/VGA/SVGA</td><td>当前板载 OV5640 路径下 20 帧优先使用 QQVGA；QVGA 以上可能降到低帧率并触发恢复。</td></tr>
-            <tr><td>亮度/对比度/饱和度</td><td>-2 到 2</td><td>写入后回读同值才算生效。</td></tr>
+            <tr><td>亮度/对比度/饱和度/锐度/曝光补偿</td><td>-2 到 2</td><td>写入后回读同值才算生效。</td></tr>
+            <tr><td>特效</td><td>0 到 6</td><td>0 无，1 负片，2 灰度，3 红色，4 绿色，5 蓝色，6 复古。</td></tr>
+            <tr><td>白平衡模式</td><td>0 到 4</td><td>0 自动，1 晴天，2 阴天，3 办公室，4 家庭。</td></tr>
             <tr><td>手动曝光值</td><td>0 到 1200</td><td>自动曝光为 0 时更稳定。</td></tr>
             <tr><td>手动增益值</td><td>0 到 30</td><td>自动增益为 0 时更稳定。</td></tr>
+            <tr><td>增益上限</td><td>0 到 6</td><td>0 约 2 倍，1 约 4 倍，2 约 8 倍，3 约 16 倍，4 约 32 倍，5 约 64 倍，6 约 128 倍。</td></tr>
           </tbody>
         </table>
       </section>
       <section class="card span-6">
         <div class="label">硬件控制台</div>
+        <div class="control-row"><span>常用寄存器</span><select id="regPreset"><option value="ap3216c,0,255">AP3216C 模式 0</option><option value="ap3216c,10,255">AP3216C 红外低字节 10</option><option value="ap3216c,11,255">AP3216C 红外高字节 11</option><option value="ap3216c,12,255">AP3216C 光照低字节 12</option><option value="ap3216c,13,255">AP3216C 光照高字节 13</option><option value="ap3216c,14,255">AP3216C 接近低字节 14</option><option value="ap3216c,15,255">AP3216C 接近高字节 15</option><option value="qma6100p,0,255">QMA6100P 芯片 ID 0</option><option value="qma6100p,1,255">QMA6100P X 低字节 1</option><option value="qma6100p,2,255">QMA6100P X 高字节 2</option><option value="qma6100p,3,255">QMA6100P Y 低字节 3</option><option value="qma6100p,4,255">QMA6100P Y 高字节 4</option><option value="qma6100p,5,255">QMA6100P Z 低字节 5</option><option value="qma6100p,6,255">QMA6100P Z 高字节 6</option><option value="es8388,46,255">ES8388 左耳机音量 46</option><option value="es8388,47,255">ES8388 右耳机音量 47</option><option value="es8388,48,255">ES8388 左喇叭音量 48</option><option value="es8388,49,255">ES8388 右喇叭音量 49</option><option value="xl9555,2,255">XL9555 输出端口 1</option><option value="xl9555,6,255">XL9555 配置端口 1</option></select><button id="regPresetBtn" class="btn" type="button">填入</button></div>
         <div class="kv">
           <div><span>设备</span><select id="regDevice"><option value="ap3216c">AP3216C</option><option value="es8388">ES8388</option><option value="qma6100p">QMA6100P</option><option value="xl9555">XL9555</option><option value="ov5640">OV5640</option></select></div>
           <div><span>寄存器地址 十进制</span><input id="regAddr" type="number" min="0" max="65535" step="1" value="0"></div>
@@ -649,14 +676,16 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="kv">
           <div><span>AP3216C 工作模式</span><select id="apModeControl"><option value="0">0 低功耗/暂停</option><option value="1">1 只开环境光</option><option value="2">2 只开接近/红外</option><option value="3" selected>3 全部开启</option></select></div>
           <div><span>QMA6100P 量程 g</span><select id="qmaRangeControl"><option>2</option><option>4</option><option selected>8</option><option>16</option></select></div>
-          <div><span>ES8388 喇叭音量 0-33</span><input id="speakerVolumeControl" type="number" min="0" max="33" step="1" value="26"></div>
-          <div><span>ES8388 耳机音量 0-33</span><input id="headphoneVolumeControl" type="number" min="0" max="33" step="1" value="18"></div>
+          <div><span>ES8388 喇叭音量</span><select id="speakerVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="22">22 较高</option><option value="26" selected>26 默认</option><option value="30">30 高</option><option value="33">33 最大</option></select></div>
+          <div><span>ES8388 耳机音量</span><select id="headphoneVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="18" selected>18 默认</option><option value="22">22 较高</option><option value="26">26 高</option><option value="33">33 最大</option></select></div>
+          <div><span>ES8388 全部音量</span><select id="allVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="22">22 较高</option><option value="26" selected>26 默认</option><option value="30">30 高</option><option value="33">33 最大</option></select></div>
         </div>
         <div class="toolbar">
           <button id="apModeBtn" class="btn" type="button">设置 AP3216C</button>
           <button id="qmaRangeBtn" class="btn" type="button">设置 QMA 量程</button>
           <button id="speakerVolumeBtn" class="btn" type="button">设置喇叭音量</button>
           <button id="headphoneVolumeBtn" class="btn" type="button">设置耳机音量</button>
+          <button id="allVolumeBtn" class="btn" type="button">设置全部音量</button>
         </div>
         <div class="meta mono" id="peripheralState">外设预设就绪：写入后会读取寄存器确认</div>
         <table>
@@ -742,12 +771,23 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       camBrightness: document.getElementById('camBrightness'),
       camContrast: document.getElementById('camContrast'),
       camSaturation: document.getElementById('camSaturation'),
+      camSharpness: document.getElementById('camSharpness'),
+      camSpecialEffect: document.getElementById('camSpecialEffect'),
+      camWbMode: document.getElementById('camWbMode'),
+      camAwb: document.getElementById('camAwb'),
+      camAwbGain: document.getElementById('camAwbGain'),
       camAec: document.getElementById('camAec'),
+      camAec2: document.getElementById('camAec2'),
+      camAeLevel: document.getElementById('camAeLevel'),
       camAecValue: document.getElementById('camAecValue'),
       camAgc: document.getElementById('camAgc'),
       camAgcGain: document.getElementById('camAgcGain'),
+      camGainCeiling: document.getElementById('camGainCeiling'),
       camMirror: document.getElementById('camMirror'),
       camVflip: document.getElementById('camVflip'),
+      camColorbar: document.getElementById('camColorbar'),
+      regPreset: document.getElementById('regPreset'),
+      regPresetBtn: document.getElementById('regPresetBtn'),
       regDevice: document.getElementById('regDevice'),
       regAddr: document.getElementById('regAddr'),
       regMask: document.getElementById('regMask'),
@@ -763,6 +803,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       speakerVolumeBtn: document.getElementById('speakerVolumeBtn'),
       headphoneVolumeControl: document.getElementById('headphoneVolumeControl'),
       headphoneVolumeBtn: document.getElementById('headphoneVolumeBtn'),
+      allVolumeControl: document.getElementById('allVolumeControl'),
+      allVolumeBtn: document.getElementById('allVolumeBtn'),
       peripheralState: document.getElementById('peripheralState'),
       cpuMhzControl: document.getElementById('cpuMhzControl'),
       cpuMhzBtn: document.getElementById('cpuMhzBtn'),
@@ -969,12 +1011,21 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       'camBrightness',
       'camContrast',
       'camSaturation',
+      'camSharpness',
+      'camSpecialEffect',
+      'camWbMode',
+      'camAwb',
+      'camAwbGain',
       'camAec',
+      'camAec2',
+      'camAeLevel',
       'camAecValue',
       'camAgc',
       'camAgcGain',
+      'camGainCeiling',
       'camMirror',
       'camVflip',
+      'camColorbar',
     ];
 
     function markCameraControlEditing(input) {
@@ -1026,12 +1077,21 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       brightness: '亮度',
       contrast: '对比度',
       saturation: '饱和度',
+      sharpness: '锐度',
+      special_effect: '特效',
+      wb_mode: '白平衡模式',
+      awb: '自动白平衡',
+      awb_gain: '白平衡增益',
       aec: '自动曝光',
+      aec2: '二级自动曝光',
+      ae_level: '曝光补偿',
       aec_value: '手动曝光值',
       agc: '自动增益',
       agc_gain: '手动增益值',
+      gainceiling: '增益上限',
       hmirror: '镜像',
       vflip: '翻转',
+      colorbar: '彩条测试',
     };
 
     function cameraControlLabel(name) {
@@ -1044,13 +1104,23 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       return camera[name];
     }
 
+    function pauseCameraStreamForControl() {
+      if (cameraStreamTimer) clearTimeout(cameraStreamTimer);
+      cameraStreamTimer = 0;
+      cameraStreamStarted = false;
+      statusEls.cameraFrame.removeAttribute('src');
+    }
+
     async function applyCameraControl(name, value, input) {
+      pauseCameraStreamForControl();
       const params = new URLSearchParams({ name, value });
       const res = await fetch(`/api/camera/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json.applied !== true) {
         statusEls.cameraMeta.textContent = `未生效：${cameraControlLabel(name)} ${json.error || res.status}`;
+        clearCameraControlEditing(input);
         setTimeout(refreshLive, 300);
+        scheduleCameraStream(300);
         return;
       }
 
@@ -1068,9 +1138,11 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         if (input) input.value = String(effective);
       }
       setTimeout(refreshLive, 300);
+      scheduleCameraStream(300);
     }
 
     async function applyCameraPreset(preset) {
+      pauseCameraStreamForControl();
       const params = new URLSearchParams({ preset });
       const res = await fetch(`/api/camera/preset?${params.toString()}`, { method: 'POST', cache: 'no-store' });
       const json = await res.json().catch(() => ({}));
@@ -1080,6 +1152,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         ? `一键预设已生效：${json.label || preset} / ${json.verified_count}/${json.control_count}`
         : `一键预设未生效：${json.error || res.status} / ${json.verified_count || 0}/${json.control_count || 0}`;
       setTimeout(refreshLive, 300);
+      scheduleCameraStream(300);
     }
 
     document.querySelectorAll('[data-cam]').forEach(button => {
@@ -1087,6 +1160,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         const input = document.getElementById(button.dataset.camInput);
         applyCameraControl(button.dataset.cam, input.value, input).catch(() => {
           statusEls.cameraMeta.textContent = 'camera control failed';
+          scheduleCameraStream(300);
         });
       });
     });
@@ -1095,6 +1169,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         const input = document.getElementById(button.dataset.camInput);
         applyCameraControl(button.dataset.camSelect, input.value, input).catch(() => {
           statusEls.cameraMeta.textContent = 'camera control failed';
+          scheduleCameraStream(300);
         });
       });
     });
@@ -1102,6 +1177,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       button.addEventListener('click', () => {
         applyCameraPreset(button.dataset.cameraPreset).catch(error => {
           statusEls.cameraMeta.textContent = `一键预设失败：${error.message}`;
+          scheduleCameraStream(300);
         });
       });
     });
@@ -1136,6 +1212,14 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     statusEls.regWriteBtn.addEventListener('click', () => accessRegister(true).catch(error => {
       statusEls.regState.textContent = error.message;
     }));
+    statusEls.regPresetBtn.addEventListener('click', () => {
+      const parts = String(statusEls.regPreset.value || '').split(',');
+      if (parts.length !== 3) return;
+      statusEls.regDevice.value = parts[0];
+      statusEls.regAddr.value = parts[1];
+      statusEls.regMask.value = parts[2];
+      statusEls.regState.textContent = `已填入常用寄存器：${parts[0]} 地址 ${parts[1]} 掩码 ${parts[2]}`;
+    });
     async function applyPeripheralControl(device, name, value) {
       const params = new URLSearchParams({ device, name, value });
       const res = await fetch(`/api/peripheral/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
@@ -1155,6 +1239,9 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.peripheralState.textContent = error.message;
     }));
     statusEls.headphoneVolumeBtn.addEventListener('click', () => applyPeripheralControl('es8388', 'headphone_volume', statusEls.headphoneVolumeControl.value).catch(error => {
+      statusEls.peripheralState.textContent = error.message;
+    }));
+    statusEls.allVolumeBtn.addEventListener('click', () => applyPeripheralControl('es8388', 'all_volume', statusEls.allVolumeControl.value).catch(error => {
       statusEls.peripheralState.textContent = error.message;
     }));
     statusEls.cpuMhzBtn.addEventListener('click', async () => {
@@ -1178,9 +1265,9 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.displayState.textContent = `LCD ${status.display.online ? 'online' : 'offline'} / page ${status.display.page_name}`;
       statusEls.tempC.textContent = status.dht11.online ? `${fmtNum(status.dht11.temp_c)} °C` : '--';
       statusEls.humidity.textContent = status.dht11.online ? `${fmtNum(status.dht11.humidity)} %` : '--';
-      statusEls.dhtState.textContent = `DHT11 ${fmtBool(status.dht11.online)}`;
+      statusEls.dhtState.textContent = `DHT${status.dht11.sensor_type || 11} ${fmtBool(status.dht11.online)} / res ${fmtNum(status.dht11.resolution_c, 1)}C ${fmtNum(status.dht11.resolution_humidity, 1)}%`;
       statusEls.dhtState.className = `meta ${status.dht11.online ? 'ok' : 'bad'}`;
-      statusEls.dhtCount.textContent = `success ${status.dht11.success_count} / fail ${status.dht11.failure_count}`;
+      statusEls.dhtCount.textContent = `success ${status.dht11.success_count} / fail ${status.dht11.failure_count} / raw ${status.dht11.raw_temperature_integer}.${status.dht11.raw_temperature_decimal}C ${status.dht11.raw_humidity_integer}.${status.dht11.raw_humidity_decimal}%`;
       statusEls.soundDb.textContent = status.mic.online ? `${fmtNum(status.mic.dbfs)} dBFS` : '--';
       statusEls.soundState.textContent = status.mic.online ? `rms ${fmtNum(status.mic.rms, 3)} peak ${status.mic.peak}` : 'Mic offline';
       statusEls.soundState.className = `meta ${status.mic.online ? 'ok' : 'bad'}`;
@@ -1240,12 +1327,23 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         updateCameraControlFromStatus(statusEls.camBrightness, status.camera.brightness);
         updateCameraControlFromStatus(statusEls.camContrast, status.camera.contrast);
         updateCameraControlFromStatus(statusEls.camSaturation, status.camera.saturation);
+        updateCameraControlFromStatus(statusEls.camSharpness, status.camera.sharpness);
+        updateCameraControlFromStatus(statusEls.camSpecialEffect, status.camera.special_effect);
+        updateCameraControlFromStatus(statusEls.camWbMode, status.camera.wb_mode);
+        updateCameraControlFromStatus(statusEls.camAwb, status.camera.awb ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camAwbGain, status.camera.awb_gain ? '1' : '0');
         updateCameraControlFromStatus(statusEls.camAec, status.camera.aec ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camAec2, status.camera.aec2 ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camAeLevel, status.camera.ae_level);
         updateCameraControlFromStatus(statusEls.camAecValue, status.camera.aec_value);
         updateCameraControlFromStatus(statusEls.camAgc, status.camera.agc ? '1' : '0');
         updateCameraControlFromStatus(statusEls.camAgcGain, status.camera.agc_gain);
+        if (Number(status.camera.gainceiling) >= 0 && Number(status.camera.gainceiling) <= 6) {
+          updateCameraControlFromStatus(statusEls.camGainCeiling, status.camera.gainceiling);
+        }
         updateCameraControlFromStatus(statusEls.camMirror, status.camera.hmirror ? '1' : '0');
         updateCameraControlFromStatus(statusEls.camVflip, status.camera.vflip ? '1' : '0');
+        updateCameraControlFromStatus(statusEls.camColorbar, status.camera.colorbar ? '1' : '0');
       }
       if (status.ap3216c && document.activeElement !== statusEls.apModeControl) {
         statusEls.apModeControl.value = String(status.ap3216c.mode);
@@ -1256,6 +1354,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       if (status.speaker) {
         if (document.activeElement !== statusEls.speakerVolumeControl) statusEls.speakerVolumeControl.value = status.speaker.speaker_volume;
         if (document.activeElement !== statusEls.headphoneVolumeControl) statusEls.headphoneVolumeControl.value = status.speaker.headphone_volume;
+        if (document.activeElement !== statusEls.allVolumeControl) statusEls.allVolumeControl.value = status.speaker.speaker_volume;
       }
       if (status.config) {
         if (!configInputsDirty) {
@@ -1439,8 +1538,17 @@ bool parseSignedText(const String &raw, int32_t minValue, int32_t maxValue, int3
   if (!value || raw.length() == 0) {
     return false;
   }
+  for (size_t i = 0; i < raw.length(); i++) {
+    const char c = raw[i];
+    if (i == 0 && c == '-' && minValue < 0) {
+      continue;
+    }
+    if (!isdigit(static_cast<unsigned char>(c))) {
+      return false;
+    }
+  }
   char *end = nullptr;
-  const long parsed = strtol(raw.c_str(), &end, 0);
+  const long parsed = strtol(raw.c_str(), &end, 10);
   if (!end || *end != '\0' || parsed < minValue || parsed > maxValue) {
     return false;
   }
@@ -2572,12 +2680,42 @@ void readDhtIfDue() {
   firstRead = false;
   lastRead = millis();
 
-  uint8_t temp = 0;
-  uint8_t hum = 0;
-  if (dht11_read_data(&temp, &hum) == 0) {
+  Dht11RawReading reading;
+  if (dht11_read_raw(&reading) == 0) {
+    const bool signedDht22Temp = (reading.temperatureInteger & 0x80U) != 0;
+    const bool looksLikeDht22 =
+        DHT_SENSOR_TYPE == 22 ||
+        reading.humidityInteger > 100 ||
+        reading.temperatureInteger > 80 ||
+        signedDht22Temp;
+    float humidity = static_cast<float>(reading.humidityInteger);
+    float tempC = static_cast<float>(reading.temperatureInteger);
+    if (looksLikeDht22) {
+      const uint16_t rawHumidity = (static_cast<uint16_t>(reading.humidityInteger) << 8) | reading.humidityDecimal;
+      const uint16_t rawTemperature = ((static_cast<uint16_t>(reading.temperatureInteger & 0x7FU) << 8) | reading.temperatureDecimal);
+      humidity = static_cast<float>(rawHumidity) / 10.0f;
+      tempC = static_cast<float>(rawTemperature) / 10.0f;
+      if (signedDht22Temp) {
+        tempC = -tempC;
+      }
+      gDht.resolutionC = 0.1f;
+      gDht.resolutionHumidity = 0.1f;
+    } else {
+      humidity += static_cast<float>(reading.humidityDecimal) / 10.0f;
+      tempC += static_cast<float>(reading.temperatureDecimal) / 10.0f;
+      gDht.resolutionC = (reading.temperatureDecimal == 0) ? 1.0f : 0.1f;
+      gDht.resolutionHumidity = (reading.humidityDecimal == 0) ? 1.0f : 0.1f;
+    }
+
     gDht.online = true;
-    gDht.tempC = temp;
-    gDht.humidity = hum;
+    gDht.tempC = tempC;
+    gDht.humidity = humidity;
+    gDht.rawHumidityInteger = reading.humidityInteger;
+    gDht.rawHumidityDecimal = reading.humidityDecimal;
+    gDht.rawTemperatureInteger = reading.temperatureInteger;
+    gDht.rawTemperatureDecimal = reading.temperatureDecimal;
+    gDht.rawChecksum = reading.checksum;
+    gDht.decimalBytesPresent = reading.humidityDecimal != 0 || reading.temperatureDecimal != 0 || looksLikeDht22;
     gDht.success++;
     gDht.lastUpdateMs = millis();
   } else {
@@ -3037,6 +3175,24 @@ String statusJson() {
   json += String(gDht.tempC, 2);
   json += ",\"humidity\":";
   json += String(gDht.humidity, 2);
+  json += ",\"sensor_type\":";
+  json += String(DHT_SENSOR_TYPE);
+  json += ",\"resolution_c\":";
+  json += String(gDht.resolutionC, 1);
+  json += ",\"resolution_humidity\":";
+  json += String(gDht.resolutionHumidity, 1);
+  json += ",\"decimal_bytes_present\":";
+  json += gDht.decimalBytesPresent ? "true" : "false";
+  json += ",\"raw_humidity_integer\":";
+  json += String(gDht.rawHumidityInteger);
+  json += ",\"raw_humidity_decimal\":";
+  json += String(gDht.rawHumidityDecimal);
+  json += ",\"raw_temperature_integer\":";
+  json += String(gDht.rawTemperatureInteger);
+  json += ",\"raw_temperature_decimal\":";
+  json += String(gDht.rawTemperatureDecimal);
+  json += ",\"raw_checksum\":";
+  json += String(gDht.rawChecksum);
   json += ",\"success_count\":";
   json += String(gDht.success);
   json += ",\"failure_count\":";
@@ -3311,6 +3467,24 @@ String liveJson() {
   json += String(gDht.tempC, 2);
   json += ",\"humidity\":";
   json += String(gDht.humidity, 2);
+  json += ",\"sensor_type\":";
+  json += String(DHT_SENSOR_TYPE);
+  json += ",\"resolution_c\":";
+  json += String(gDht.resolutionC, 1);
+  json += ",\"resolution_humidity\":";
+  json += String(gDht.resolutionHumidity, 1);
+  json += ",\"decimal_bytes_present\":";
+  json += gDht.decimalBytesPresent ? "true" : "false";
+  json += ",\"raw_humidity_integer\":";
+  json += String(gDht.rawHumidityInteger);
+  json += ",\"raw_humidity_decimal\":";
+  json += String(gDht.rawHumidityDecimal);
+  json += ",\"raw_temperature_integer\":";
+  json += String(gDht.rawTemperatureInteger);
+  json += ",\"raw_temperature_decimal\":";
+  json += String(gDht.rawTemperatureDecimal);
+  json += ",\"raw_checksum\":";
+  json += String(gDht.rawChecksum);
   json += ",\"success_count\":";
   json += String(gDht.success);
   json += ",\"failure_count\":";
@@ -3611,7 +3785,8 @@ void handleCameraJpeg() {
   server.setContentLength(frame->len);
   server.send(200, "image/jpeg", "");
   WiFiClient client = server.client();
-  client.write(frame->buf, frame->len);
+  const size_t frameLen = frame->len;
+  client.write(frame->buf, frameLen);
   boardcamera::release(frame);
 }
 
@@ -3633,6 +3808,10 @@ void streamCameraClient(WiFiClient &client) {
   uint8_t consecutiveMisses = 0;
 
   while (client.connected()) {
+    const uint32_t pauseUntil = static_cast<uint32_t>(gCameraStreamPauseUntilMs);
+    if (gCameraStreamPaused || static_cast<int32_t>(pauseUntil - millis()) > 0) {
+      break;
+    }
     const uint32_t frameStartedAt = millis();
     camera_fb_t *frame = boardcamera::capture();
     if (!frame) {
@@ -3648,11 +3827,12 @@ void streamCameraClient(WiFiClient &client) {
     client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\nX-Frame-Number: %lu\r\n\r\n",
                   static_cast<unsigned int>(frame->len),
                   static_cast<unsigned long>(gCameraStreamFrameCount + 1));
-    const size_t written = client.write(frame->buf, frame->len);
+    const size_t frameLen = frame->len;
+    const size_t written = client.write(frame->buf, frameLen);
     client.print("\r\n");
     boardcamera::release(frame);
 
-    if (written != frame->len) {
+    if (written != frameLen) {
       break;
     }
 
@@ -3690,12 +3870,30 @@ void cameraStreamTask(void *parameter) {
   (void)parameter;
   for (;;) {
     WiFiClient client = cameraStreamServer.available();
-    if (client) {
+    const uint32_t pauseUntil = static_cast<uint32_t>(gCameraStreamPauseUntilMs);
+    const bool paused = gCameraStreamPaused || static_cast<int32_t>(pauseUntil - millis()) > 0;
+    if (client && !paused) {
       streamCameraClient(client);
+      client.stop();
+    } else if (client) {
       client.stop();
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
+}
+
+void pauseCameraStreamForControls(uint32_t holdMs = 1200) {
+  gCameraStreamPaused = true;
+  gCameraStreamPauseUntilMs = millis() + holdMs;
+  const uint32_t deadline = millis() + 800;
+  while (gCameraStreamClients > 0 && static_cast<int32_t>(deadline - millis()) > 0) {
+    delay(20);
+  }
+}
+
+void resumeCameraStreamAfterControls() {
+  gCameraStreamPauseUntilMs = millis() + 250;
+  gCameraStreamPaused = false;
 }
 
 bool cameraControlValueAllowed(const String &name, int value, const char **error) {
@@ -3791,12 +3989,7 @@ void handleCameraPreset() {
     return;
   }
 
-  struct PresetControl {
-    const char *name;
-    int value;
-  };
-
-  static const PresetControl smooth[] = {
+  static const BoardCameraControl smooth[] = {
       {"framesize", FRAMESIZE_QQVGA},
       {"quality", 30},
       {"brightness", 0},
@@ -3805,7 +3998,7 @@ void handleCameraPreset() {
       {"aec", 1},
       {"agc", 1},
   };
-  static const PresetControl clear[] = {
+  static const BoardCameraControl clear[] = {
       {"framesize", FRAMESIZE_QQVGA},
       {"quality", 18},
       {"brightness", 0},
@@ -3814,7 +4007,7 @@ void handleCameraPreset() {
       {"aec", 1},
       {"agc", 1},
   };
-  static const PresetControl bright[] = {
+  static const BoardCameraControl bright[] = {
       {"framesize", FRAMESIZE_QQVGA},
       {"quality", 25},
       {"brightness", 2},
@@ -3825,7 +4018,7 @@ void handleCameraPreset() {
   };
 
   const String preset = server.arg("preset");
-  const PresetControl *controls = nullptr;
+  const BoardCameraControl *controls = nullptr;
   size_t controlCount = 0;
   const char *label = "";
   if (preset == "smooth") {
@@ -3845,23 +4038,38 @@ void handleCameraPreset() {
     return;
   }
 
-  size_t appliedCount = 0;
   for (size_t i = 0; i < controlCount; i++) {
     const String controlName = controls[i].name;
     const char *rangeError = "";
-    if (!cameraControlValueAllowed(controlName, controls[i].value, &rangeError) ||
-        !boardcamera::setControl(controlName, controls[i].value)) {
+    if (!cameraControlValueAllowed(controlName, controls[i].value, &rangeError)) {
       String json;
       json.reserve(160);
       json += "{\"success\":false,\"applied\":false,\"preset\":\"";
       json += preset;
-      json += "\",\"error\":\"control_failed\",\"control\":\"";
+      json += "\",\"error\":\"";
+      json += rangeError;
+      json += "\",\"control\":\"";
       json += controlName;
       json += "\"}";
       server.send(400, "application/json; charset=utf-8", json);
       return;
     }
-    appliedCount++;
+  }
+
+  pauseCameraStreamForControls();
+  size_t appliedCount = 0;
+  const bool applied = boardcamera::setControls(controls, controlCount, &appliedCount);
+  resumeCameraStreamAfterControls();
+  if (!applied) {
+    String json;
+    json.reserve(160);
+    json += "{\"success\":false,\"applied\":false,\"preset\":\"";
+    json += preset;
+    json += "\",\"error\":\"control_failed\",\"applied_count\":";
+    json += String(appliedCount);
+    json += "}";
+    server.send(400, "application/json; charset=utf-8", json);
+    return;
   }
 
   const BoardCameraStatus &cam = boardcamera::status();
@@ -3937,7 +4145,9 @@ void handleCameraControl() {
     return;
   }
 
+  pauseCameraStreamForControls();
   const bool ok = boardcamera::setControl(name, value);
+  resumeCameraStreamAfterControls();
   if (!ok) {
     server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_control\"}");
     return;
@@ -4166,10 +4376,26 @@ void handlePeripheralControl() {
     }
     uint8_t left = 0;
     uint8_t right = 0;
-    const uint8_t readRegLeft = (name == "headphone_volume") ? 46 : 48;
-    const uint8_t readRegRight = (name == "headphone_volume") ? 47 : 49;
-    ok = ok && es8388codec::readRegister(readRegLeft, &left) && es8388codec::readRegister(readRegRight, &right);
-    const int effective = (left == right) ? left : -1;
+    int effective = -1;
+    if (name == "all_volume") {
+      uint8_t hpLeft = 0;
+      uint8_t hpRight = 0;
+      uint8_t spkLeft = 0;
+      uint8_t spkRight = 0;
+      ok = ok &&
+           es8388codec::readRegister(46, &hpLeft) &&
+           es8388codec::readRegister(47, &hpRight) &&
+           es8388codec::readRegister(48, &spkLeft) &&
+           es8388codec::readRegister(49, &spkRight);
+      effective = (hpLeft == requested && hpRight == requested && spkLeft == requested && spkRight == requested)
+                      ? static_cast<int>(requested)
+                      : -1;
+    } else {
+      const uint8_t readRegLeft = (name == "headphone_volume") ? 46 : 48;
+      const uint8_t readRegRight = (name == "headphone_volume") ? 47 : 49;
+      ok = ok && es8388codec::readRegister(readRegLeft, &left) && es8388codec::readRegister(readRegRight, &right);
+      effective = (left == right) ? left : -1;
+    }
     sendPeripheralControlResult(ok && effective == static_cast<int>(requested), "es8388", name.c_str(), requested, effective, "write_failed");
     return;
   }
@@ -4254,26 +4480,64 @@ void handleSystemControl() {
   }
 
   bool ok = false;
+  String name = "";
+  int32_t requested = 0;
+  int32_t effective = -1;
+  const char *error = "unsupported_control";
   if (server.hasArg("cpu_mhz")) {
     int32_t mhz = 0;
     if (!parseSignedText(server.arg("cpu_mhz"), 80, 240, &mhz)) {
-      server.send(400, "application/json; charset=utf-8", "{\"applied\":false}");
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
+    name = "cpu_mhz";
+    requested = mhz;
     if (mhz == 80 || mhz == 160 || mhz == 240) {
       ok = setCpuFrequencyMhz(static_cast<uint32_t>(mhz));
+      effective = static_cast<int32_t>(getCpuFrequencyMhz());
+      error = "write_failed";
+    } else {
+      error = "out_of_range";
     }
   } else if (server.hasArg("wifi_tx_power")) {
     int32_t power = 0;
     if (!parseSignedText(server.arg("wifi_tx_power"), WIFI_POWER_MINUS_1dBm, WIFI_POWER_19_5dBm, &power)) {
-      server.send(400, "application/json; charset=utf-8", "{\"applied\":false}");
+      server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
+    name = "wifi_tx_power";
+    requested = power;
     if (power >= WIFI_POWER_MINUS_1dBm && power <= WIFI_POWER_19_5dBm) {
       ok = WiFi.setTxPower(static_cast<wifi_power_t>(power));
+      wifi_power_t currentPower = WiFi.getTxPower();
+      effective = static_cast<int32_t>(currentPower);
+      error = "write_failed";
+    } else {
+      error = "out_of_range";
     }
   }
-  server.send(ok ? 200 : 400, "application/json; charset=utf-8", ok ? "{\"applied\":true}" : "{\"applied\":false}");
+  const bool verified = ok && effective == requested;
+  String json;
+  json.reserve(180);
+  json += "{\"applied\":";
+  json += ok ? "true" : "false";
+  json += ",\"success\":";
+  json += verified ? "true" : "false";
+  json += ",\"name\":\"";
+  json += name;
+  json += "\",\"value\":";
+  json += String(requested);
+  json += ",\"effective\":";
+  json += String(effective);
+  json += ",\"verified\":";
+  json += verified ? "true" : "false";
+  if (!verified) {
+    json += ",\"error\":\"";
+    json += error;
+    json += "\"";
+  }
+  json += "}";
+  server.send(verified ? 200 : 400, "application/json; charset=utf-8", json);
 }
 
 void handleFlush() {

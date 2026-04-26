@@ -9,7 +9,7 @@ Feature: ESP32 Sensor Hub Dashboard
   Scenario: Live dashboard exposes sensor telemetry
     Given the board is running on the local Wi-Fi
     When the client requests /api/status, /api/health, /api/live and /api/history
-    Then DHT11, AP3216C, QMA6100P, microphone, ADC input voltage, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
+    Then DHT11 raw frame bytes, effective DHT resolution, AP3216C, QMA6100P, microphone, ADC input voltage, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
     And /api/health should report compact OK health for storage, sensors, ADC input voltage, speaker, alerts, uptime, heap and persisted samples
     And /api/live should report 500 ms live polling, cached live payloads, ADC input voltage, and 10000 ms sample and flush cadence
     And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
@@ -39,6 +39,7 @@ Feature: ESP32 Sensor Hub Dashboard
     Then the register API should return a masked value
     And the camera control API should report effective values that round-trip through /api/camera
     And the camera control API should return success=true only when the hardware readback verifies the setting
+    And camera controls should still complete and capture should recover while an MJPEG stream is connected
     And the camera status should expose capture recovery counters so stalled frame capture is visible
     And register controls should use Chinese decimal guidance and safe write ranges
     And unsafe register writes, non-decimal register numbers, invalid devices, wrapped 8-bit register addresses, out-of-range camera values, and invalid camera frame sizes should be rejected
@@ -46,10 +47,11 @@ Feature: ESP32 Sensor Hub Dashboard
 
   Scenario: Dashboard controls remain editable while live polling runs
     Given the board HTTP service is online and the HTML dashboard polls /api/live every 500 ms
-    When the user drags a camera slider or changes a camera selector
+    When the user changes a camera selector
     Then live polling should not overwrite the edited control value before the user applies it
     And the dashboard edit-lock JavaScript behavior should pass a host-side executable test
     And one-click camera presets should round-trip through /api/camera/preset
+    And normal camera and peripheral settings should be exposed as dropdown selectors instead of manual numeric inputs
     And AP3216C mode, QMA6100P range, and ES8388 volume presets should round-trip through /api/peripheral/control
     And out-of-range preset values should be rejected with explicit errors
 
