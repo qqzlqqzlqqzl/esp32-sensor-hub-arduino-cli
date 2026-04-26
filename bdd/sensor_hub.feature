@@ -28,11 +28,12 @@ Feature: ESP32 Sensor Hub Dashboard
     And setup_complete_ms should stay below the accepted boot readiness budget
     And only the latest dashboard history rows should be parsed during boot
 
-  Scenario: HTML dashboard, health, fast live polling, board speaker playback controls, alert thresholds, self-test and CSV log are available
+  Scenario: HTML dashboard, health, fast live polling, board speaker playback controls, alert thresholds, self-test and logs are available
     Given the board HTTP service is online
-    When the client requests / and /api/log.csv
-    Then the HTML should contain the dashboard shell, a health link, completion-based 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls and a CSV log link
+    When the client requests /, /api/log.csv, /api/diagnostics and /api/diagnostics/log
+    Then the HTML should contain the dashboard shell, a health link, completion-based 0.5 second live polling, a board speaker playback button, a board speaker self-test button, alert threshold controls, a CSV log link and diagnostic log controls
     And the CSV log should contain persisted sensor samples including ADC input voltage columns
+    And the diagnostic log should be JSON Lines that can be downloaded and cleared through HTTP
 
   Scenario: Hardware register and camera controls are exposed
     Given the board HTTP service is online
@@ -57,6 +58,12 @@ Feature: ESP32 Sensor Hub Dashboard
     And QMA6100P range, bandwidth, power, interrupt latch, step, tap and motion presets should round-trip through /api/peripheral/control
     And ES8388 volume, mic gain, input channel, ALC, 3D, sample-rate and EQ presets should round-trip through /api/peripheral/control
     And out-of-range preset values should be rejected with explicit errors
+
+  Scenario: Diagnostic logging captures feature failures
+    Given the board HTTP service is online
+    When verification triggers rejected camera, peripheral, register, config and system operations
+    Then /api/diagnostics should report persisted diagnostic events without write failures
+    And /api/diagnostics/log should contain JSONL entries for camera, peripheral, register, config and system components
 
   Scenario: 2Hz live polling remains stable
     Given the board HTTP service is online

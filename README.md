@@ -16,6 +16,7 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - Dropdown peripheral control presets for AP3216C thresholds/calibration/interrupt clear, QMA6100P bandwidth/power/interrupt/motion features, and ES8388 input/gain/ALC/3D/sample-rate/EQ settings
 - CPU-linked status LED blink rate telemetry
 - LittleFS CSV persistence
+- LittleFS JSONL diagnostic logging for camera, peripheral, register, config, audio, display, storage, network and system events
 - Fast boot history recovery with boot timing telemetry
 - LittleFS-backed alert threshold configuration
 - Compact `/api/health` endpoint for unattended polling
@@ -78,6 +79,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 - boot readiness telemetry checks through `/api/status`
 - LittleFS config persistence through `/api/config`
 - forced log flush through `/api/flush`
+- diagnostic log status/download/clear through `/api/diagnostics`, `/api/diagnostics/log` and `/api/diagnostics/clear`
 - reboot recovery through `/api/reboot`
 - short soak sampling and heap stability
 

@@ -9,6 +9,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -71,10 +72,13 @@ constexpr uint32_t kCameraStreamFrameIntervalMs = 1000 / kCameraStreamTargetFps;
 constexpr size_t kHistoryCapacity = 120;
 constexpr char kLogPath[] = "/sensor_log.csv";
 constexpr char kRotatedLogPath[] = "/sensor_log.old.csv";
+constexpr char kDiagLogPath[] = "/diag_log.jsonl";
+constexpr char kRotatedDiagLogPath[] = "/diag_log.old.jsonl";
 constexpr char kConfigPath[] = "/hub_config.txt";
 constexpr char kConfigTmpPath[] = "/hub_config.tmp";
 constexpr char kConfigBackupPath[] = "/hub_config.bak";
 constexpr size_t kMaxLogFileBytes = 512 * 1024;
+constexpr size_t kMaxDiagLogFileBytes = 160 * 1024;
 constexpr size_t kMaxPendingLogBytes = 24 * 1024;
 constexpr size_t kMaxLogLineLength = 520;
 constexpr size_t kRuntimeTrackCapacity = 32;
@@ -326,6 +330,11 @@ uint32_t gPersistedLastSampleEpoch = 0;
 uint32_t gSampleSeq = 0;
 uint32_t gStorageWriteFailures = 0;
 uint32_t gDroppedSamples = 0;
+uint32_t gDiagEvents = 0;
+uint32_t gDiagWriteFailures = 0;
+uint32_t gDiagDroppedEvents = 0;
+uint32_t gLastDiagMs = 0;
+SemaphoreHandle_t gDiagLogMutex = nullptr;
 volatile uint32_t gIdleHookCounts[2] = {};
 uint32_t gIdleMaxCounts[2] = {1, 1};
 bool gIdleHooksReady = false;
@@ -553,6 +562,8 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       <button id="saveConfigBtn" class="btn" type="button">保存阈值</button>
       <a class="btn" href="/api/health" target="_blank" rel="noreferrer">健康检查</a>
       <a class="btn" href="/api/log.csv" target="_blank" rel="noreferrer">查看 CSV 日志</a>
+      <a class="btn" href="/api/diagnostics/log" target="_blank" rel="noreferrer">查看诊断日志</a>
+      <button id="clearDiagBtn" class="btn" type="button">清空诊断日志</button>
     </div>
     <div id="alertLine" class="alert-line"></div>
 
@@ -893,6 +904,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       speakTempBtn: document.getElementById('speakTempBtn'),
       speakerSelfTestBtn: document.getElementById('speakerSelfTestBtn'),
       saveConfigBtn: document.getElementById('saveConfigBtn'),
+      clearDiagBtn: document.getElementById('clearDiagBtn'),
     };
     const charts = {
       climate: document.getElementById('climateChart').getContext('2d'),
@@ -1045,6 +1057,15 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         setTimeout(refreshLive, 1200);
       } catch (error) {
         statusEls.speakerState.textContent = 'self test trigger failed';
+      }
+    });
+    statusEls.clearDiagBtn.addEventListener('click', async () => {
+      try {
+        statusEls.storageHealth.textContent = 'clearing diagnostic log...';
+        await fetch('/api/diagnostics/clear', { method: 'POST', cache: 'no-store' });
+        setTimeout(refreshSnapshot, 600);
+      } catch (error) {
+        statusEls.storageHealth.textContent = 'diagnostic clear failed';
       }
     });
     statusEls.saveConfigBtn.addEventListener('click', async () => {
@@ -1446,7 +1467,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.heapState.textContent = `min ${fmtBytes(status.system.min_free_heap_bytes)} / max alloc ${fmtBytes(status.system.max_alloc_heap_bytes)}`;
       statusEls.persistedCount.textContent = status.storage.persisted_samples;
       statusEls.lastSample.textContent = `最近落盘 ${fmtTime(status.storage.last_sample_epoch)}`;
-      statusEls.storageHealth.textContent = `pending ${status.storage.pending_bytes} / write fail ${status.storage.write_failures} / drop ${status.storage.dropped_samples}`;
+      statusEls.storageHealth.textContent = `pending ${status.storage.pending_bytes} / write fail ${status.storage.write_failures} / drop ${status.storage.dropped_samples} / diag ${status.storage.diag_events || 0}`;
       statusEls.lcdPage.textContent = `${status.display.page + 1}. ${status.display.page_name}`;
       statusEls.lcdState.textContent = status.display.online ? '离线屏幕轮播正常' : 'LCD offline';
       statusEls.lcdState.className = `meta ${status.display.online ? 'ok' : 'bad'}`;
@@ -1796,6 +1817,12 @@ bool parseLongStrict(String value, long minValue, long maxValue, long *out) {
   return true;
 }
 
+bool appendDiagLog(const char *level,
+                   const char *component,
+                   const char *action,
+                   const char *message,
+                   const String &detail = String());
+
 bool parseConfigLine(const String &line) {
   const int equalsIndex = line.indexOf('=');
   if (equalsIndex <= 0) {
@@ -1888,6 +1915,7 @@ bool saveConfigToLittleFs() {
   File file = LittleFS.open(kConfigTmpPath, "w");
   if (!file) {
     gStorageWriteFailures++;
+    appendDiagLog("error", "config", "open_failed", "failed to open config temp file");
     return false;
   }
 
@@ -1906,6 +1934,7 @@ bool saveConfigToLittleFs() {
     LittleFS.remove(kConfigTmpPath);
     gStorageWriteFailures++;
     gConfigPersisted = LittleFS.exists(kConfigPath);
+    appendDiagLog("error", "config", "write_failed", "config temp file write failed");
     return false;
   }
 
@@ -1914,6 +1943,7 @@ bool saveConfigToLittleFs() {
     LittleFS.remove(kConfigTmpPath);
     gStorageWriteFailures++;
     gConfigPersisted = true;
+    appendDiagLog("error", "config", "backup_failed", "config backup rename failed");
     return false;
   }
 
@@ -1924,6 +1954,7 @@ bool saveConfigToLittleFs() {
     }
     gStorageWriteFailures++;
     gConfigPersisted = LittleFS.exists(kConfigPath);
+    appendDiagLog("error", "config", "commit_failed", "config commit rename failed");
     return false;
   }
 
@@ -2211,6 +2242,17 @@ void initDisplay(bool manualReinit = false) {
                static_cast<unsigned long>(gDisplayRecovery.lastInitMs),
                static_cast<unsigned long>(gDisplayRecovery.initCount));
   gBoot.displayInitMs = gDisplayRecovery.lastInitMs;
+  String detail;
+  detail.reserve(96);
+  detail += "\"manual\":";
+  detail += manualReinit ? "true" : "false";
+  detail += ",\"init_ms\":";
+  detail += String(gDisplayRecovery.lastInitMs);
+  detail += ",\"power_high\":";
+  detail += gDisplayRecovery.powerHigh ? "true" : "false";
+  detail += ",\"reset_high\":";
+  detail += gDisplayRecovery.resetHigh ? "true" : "false";
+  appendDiagLog(gDisplayReady ? "info" : "error", "display", "init", gDisplayReady ? "display initialized" : "display init failed", detail);
 }
 
 void initCpuTelemetry() {
@@ -2360,6 +2402,135 @@ void updateDisplayIfDue() {
 
 bool flushPendingLog();
 
+void appendJsonString(String &json, const char *value) {
+  json += "\"";
+  if (value) {
+    for (const char *p = value; *p; p++) {
+      const char c = *p;
+      if (c == '"' || c == '\\') {
+        json += "\\";
+        json += c;
+      } else if (c == '\n') {
+        json += "\\n";
+      } else if (c == '\r') {
+        json += "\\r";
+      } else if (c == '\t') {
+        json += "\\t";
+      } else if (static_cast<uint8_t>(c) >= 0x20) {
+        json += c;
+      }
+    }
+  }
+  json += "\"";
+}
+
+size_t fileSizeOrZero(const char *path) {
+  if (!gLittleFsReady || !path || !LittleFS.exists(path)) {
+    return 0;
+  }
+  File file = LittleFS.open(path, "r");
+  if (!file) {
+    return 0;
+  }
+  const size_t size = file.size();
+  file.close();
+  return size;
+}
+
+void rotateFileIfNeeded(const char *path, const char *rotatedPath, size_t maxBytes) {
+  if (!gLittleFsReady || !path || !rotatedPath || !LittleFS.exists(path)) {
+    return;
+  }
+  if (fileSizeOrZero(path) < maxBytes) {
+    return;
+  }
+  LittleFS.remove(rotatedPath);
+  LittleFS.rename(path, rotatedPath);
+}
+
+bool takeDiagLogLock(TickType_t timeoutTicks = pdMS_TO_TICKS(250)) {
+  if (!gDiagLogMutex) {
+    gDiagLogMutex = xSemaphoreCreateMutex();
+  }
+  return gDiagLogMutex && xSemaphoreTake(gDiagLogMutex, timeoutTicks) == pdTRUE;
+}
+
+void giveDiagLogLock() {
+  if (gDiagLogMutex) {
+    xSemaphoreGive(gDiagLogMutex);
+  }
+}
+
+bool appendDiagLog(const char *level,
+                   const char *component,
+                   const char *action,
+                   const char *message,
+                   const String &detail) {
+  const uint32_t nowMs = millis();
+  gLastDiagMs = nowMs;
+  if (!gLittleFsReady) {
+    gDiagDroppedEvents++;
+    Serial.printf("[DIAG][drop] %s/%s %s\n", component ? component : "?", action ? action : "?", message ? message : "");
+    return false;
+  }
+  if (!takeDiagLogLock()) {
+    gDiagDroppedEvents++;
+    return false;
+  }
+
+  rotateFileIfNeeded(kDiagLogPath, kRotatedDiagLogPath, kMaxDiagLogFileBytes);
+  File file = LittleFS.open(kDiagLogPath, FILE_APPEND);
+  if (!file) {
+    gDiagWriteFailures++;
+    giveDiagLogLock();
+    return false;
+  }
+
+  String line;
+  line.reserve(360 + detail.length());
+  line += "{\"ms\":";
+  line += String(nowMs);
+  line += ",\"epoch\":";
+  line += String(currentEpoch());
+  line += ",\"uptime_sec\":";
+  line += String(nowMs / 1000UL);
+  line += ",\"level\":";
+  appendJsonString(line, level);
+  line += ",\"component\":";
+  appendJsonString(line, component);
+  line += ",\"action\":";
+  appendJsonString(line, action);
+  line += ",\"message\":";
+  appendJsonString(line, message);
+  line += ",\"heap\":";
+  line += String(ESP.getFreeHeap());
+  line += ",\"min_heap\":";
+  line += String(ESP.getMinFreeHeap());
+  line += ",\"rssi\":";
+  line += String(currentRssiDbm());
+  line += ",\"pending_csv_bytes\":";
+  line += String(gPendingLog.length());
+  if (detail.length() > 0) {
+    line += ",\"detail\":{";
+    line += detail;
+    line += "}";
+  }
+  line += "}\n";
+
+  const size_t written = file.write(reinterpret_cast<const uint8_t *>(line.c_str()), line.length());
+  file.flush();
+  const bool ok = written == line.length() && file.getWriteError() == 0;
+  file.close();
+  if (ok) {
+    gDiagEvents++;
+    giveDiagLogLock();
+    return true;
+  }
+  gDiagWriteFailures++;
+  giveDiagLogLock();
+  return false;
+}
+
 bool trimPendingLog(size_t incomingBytes) {
   if (incomingBytes > kMaxPendingLogBytes) {
     gDroppedSamples++;
@@ -2457,6 +2628,7 @@ bool flushPendingLog() {
   File logFile = LittleFS.open(kLogPath, FILE_APPEND);
   if (!logFile) {
     gStorageWriteFailures++;
+    appendDiagLog("error", "storage", "csv_open_failed", "failed to open CSV log for append");
     return false;
   }
 
@@ -2473,6 +2645,7 @@ bool flushPendingLog() {
     const size_t written = logFile.write(reinterpret_cast<const uint8_t *>(line.c_str()), line.length());
     if (written != line.length()) {
       gStorageWriteFailures++;
+      appendDiagLog("error", "storage", "csv_write_failed", "short write while flushing CSV log");
       break;
     }
     const int firstComma = line.indexOf(',');
@@ -2823,6 +2996,19 @@ void initLittleFs() {
     const unsigned long configStartedAt = millis();
     loadConfigFromLittleFs();
     gBoot.configLoadMs = millis() - configStartedAt;
+    String detail;
+    detail.reserve(120);
+    detail += "\"history_rows\":";
+    detail += String(gBoot.historyRowsCounted);
+    detail += ",\"loaded_rows\":";
+    detail += String(gBoot.historyRowsLoaded);
+    detail += ",\"used_bytes\":";
+    detail += String(LittleFS.usedBytes());
+    detail += ",\"total_bytes\":";
+    detail += String(LittleFS.totalBytes());
+    appendDiagLog("info", "storage", "mount", "LittleFS mounted", detail);
+  } else {
+    appendDiagLog("error", "storage", "mount", "LittleFS mount failed");
   }
 }
 
@@ -2831,6 +3017,7 @@ void initChipTemperature() {
   if (temp_sensor_set_config(config) == ESP_OK && temp_sensor_start() == ESP_OK) {
     gChipTempReady = true;
   }
+  appendDiagLog(gChipTempReady ? "info" : "warn", "sensor", "chip_temp_init", gChipTempReady ? "chip temperature sensor ready" : "chip temperature sensor unavailable");
 }
 
 void initAdcVoltage() {
@@ -2840,6 +3027,13 @@ void initAdcVoltage() {
   gAdcVoltage.pin = kAdcVoltagePin;
   gAdcVoltage.scale = kAdcVoltageScale;
   gAdcReady = true;
+  String detail;
+  detail.reserve(48);
+  detail += "\"pin\":";
+  detail += String(kAdcVoltagePin);
+  detail += ",\"scale\":";
+  detail += String(kAdcVoltageScale, 3);
+  appendDiagLog("info", "adc", "init", "ADC voltage input initialized", detail);
 }
 
 void initNetwork() {
@@ -2852,6 +3046,14 @@ void initNetwork() {
   }
   configTime(8 * 3600, 0, "ntp.ntsc.ac.cn", "ntp1.aliyun.com", "time.windows.com");
   gBoot.networkStartMs = millis() - startedAt;
+  String detail;
+  detail.reserve(80);
+  detail += "\"sta_configured\":";
+  detail += strlen(kStaSsid) > 0 ? "true" : "false";
+  detail += ",\"ap_ssid\":\"";
+  detail += kApSsid;
+  detail += "\"";
+  appendDiagLog("info", "network", "init", "WiFi AP/STA started", detail);
 }
 
 void readDhtIfDue() {
@@ -2864,6 +3066,7 @@ void readDhtIfDue() {
   lastRead = millis();
 
   Dht11RawReading reading;
+  const bool wasOnline = gDht.online;
   if (dht11_read_raw(&reading) == 0) {
     const bool signedDht22Temp = (reading.temperatureInteger & 0x80U) != 0;
     const bool looksLikeDht22 =
@@ -2901,10 +3104,20 @@ void readDhtIfDue() {
     gDht.decimalBytesPresent = reading.humidityDecimal != 0 || reading.temperatureDecimal != 0 || looksLikeDht22;
     gDht.success++;
     gDht.lastUpdateMs = millis();
+    if (!wasOnline && gDht.success > 1) {
+      appendDiagLog("info", "dht11", "read_recovered", "DHT read recovered");
+    }
   } else {
     gDht.online = false;
     gDht.failure++;
     gDht.lastUpdateMs = millis();
+    if (wasOnline || gDht.failure <= 3 || (gDht.failure % 10U) == 0) {
+      String detail;
+      detail.reserve(32);
+      detail += "\"failure_count\":";
+      detail += String(gDht.failure);
+      appendDiagLog("warn", "dht11", "read_failed", "DHT read failed", detail);
+    }
   }
 }
 
@@ -2919,10 +3132,17 @@ void readChipTempIfDue() {
 
   float temp = 0.0f;
   if (temp_sensor_read_celsius(&temp) == ESP_OK) {
+    const bool wasOnline = gChipTemp.online;
     gChipTemp.online = true;
     gChipTemp.tempC = temp;
     gChipTemp.lastUpdateMs = millis();
+    if (!wasOnline) {
+      appendDiagLog("info", "sensor", "chip_temp_recovered", "chip temperature read recovered");
+    }
   } else {
+    if (gChipTemp.online) {
+      appendDiagLog("warn", "sensor", "chip_temp_failed", "chip temperature read failed");
+    }
     gChipTemp.online = false;
   }
 }
@@ -2935,7 +3155,13 @@ void readAp3216IfDue() {
   }
   firstRead = false;
   lastRead = millis();
-  ap3216c::read(&gLight);
+  const bool wasOnline = gLight.online;
+  const bool ok = ap3216c::read(&gLight);
+  if (!ok && wasOnline) {
+    appendDiagLog("warn", "ap3216c", "read_failed", "AP3216C read failed");
+  } else if (ok && !wasOnline) {
+    appendDiagLog("info", "ap3216c", "read_recovered", "AP3216C read recovered");
+  }
 }
 
 void readQmaIfDue() {
@@ -2946,7 +3172,13 @@ void readQmaIfDue() {
   }
   firstRead = false;
   lastRead = millis();
-  qma6100p::read(&gAccel);
+  const bool wasOnline = gAccel.online;
+  const bool ok = qma6100p::read(&gAccel);
+  if (!ok && wasOnline) {
+    appendDiagLog("warn", "qma6100p", "read_failed", "QMA6100P read failed");
+  } else if (ok && !wasOnline) {
+    appendDiagLog("info", "qma6100p", "read_recovered", "QMA6100P read recovered");
+  }
 }
 
 void readMicIfDue() {
@@ -2957,8 +3189,14 @@ void readMicIfDue() {
   }
   firstRead = false;
   lastRead = millis();
+  const bool wasOnline = gMic.online;
   if (!es8388codec::readMicLevel(&gMic)) {
     gMic.online = false;
+    if (wasOnline) {
+      appendDiagLog("warn", "audio", "mic_read_failed", "ES8388 microphone read failed");
+    }
+  } else if (!wasOnline) {
+    appendDiagLog("info", "audio", "mic_read_recovered", "ES8388 microphone read recovered");
   }
 }
 
@@ -2986,10 +3224,20 @@ void readAdcVoltageIfDue() {
   gAdcVoltage.online = true;
   gAdcVoltage.success++;
   gAdcVoltage.lastUpdateMs = millis();
+  if (gAdcVoltage.success == 1) {
+    String detail;
+    detail.reserve(64);
+    detail += "\"raw\":";
+    detail += String(gAdcVoltage.raw);
+    detail += ",\"millivolts\":";
+    detail += String(gAdcVoltage.millivolts);
+    appendDiagLog("info", "adc", "first_read", "ADC voltage first read", detail);
+  }
 }
 
 bool speakTemperatureOnBoard() {
   if (!gMicReady || !gDht.online) {
+    appendDiagLog("warn", "audio", "speak_temperature", "temperature speech rejected by local state");
     return false;
   }
 
@@ -2998,6 +3246,7 @@ bool speakTemperatureOnBoard() {
   if (!appendClip(&speechassets::kPrefix, sequence, 6, &count) ||
       !appendChineseIntegerClips(static_cast<int>(lroundf(gDht.tempC)), sequence, 6, &count) ||
       !appendClip(&speechassets::kDegree, sequence, 6, &count)) {
+    appendDiagLog("error", "audio", "speak_temperature", "temperature speech clip assembly failed");
     return false;
   }
 
@@ -3016,6 +3265,15 @@ bool speakTemperatureOnBoard() {
     gSpeaker.speakCount++;
     gSpeaker.lastSpokenTempC = static_cast<int16_t>(lroundf(gDht.tempC));
     gSpeaker.hasSpokenTemp = true;
+    String detail;
+    detail.reserve(48);
+    detail += "\"temp_c\":";
+    detail += String(gSpeaker.lastSpokenTempC);
+    detail += ",\"clips\":";
+    detail += String(count);
+    appendDiagLog("info", "audio", "speak_temperature", "temperature speech played", detail);
+  } else {
+    appendDiagLog("error", "audio", "speak_temperature", "temperature speech playback failed");
   }
   return ok;
 }
@@ -3044,6 +3302,17 @@ void runSpeakerActionsIfDue() {
     gSpeaker.lastTestMs = millis();
     gSpeaker.testRunning = false;
     gSpeakerTestRequested = false;
+    String detail;
+    detail.reserve(120);
+    detail += "\"passed\":";
+    detail += gSpeaker.loopbackPassed ? "true" : "false";
+    detail += ",\"muted_dbfs\":";
+    detail += String(gSpeaker.mutedDbfs, 2);
+    detail += ",\"enabled_dbfs\":";
+    detail += String(gSpeaker.enabledDbfs, 2);
+    detail += ",\"delta_dbfs\":";
+    detail += String(gSpeaker.deltaDbfs, 2);
+    appendDiagLog(gSpeaker.loopbackPassed ? "info" : "warn", "audio", "speaker_self_test", "speaker loopback self-test finished", detail);
     return;
   }
 
@@ -3313,6 +3582,18 @@ String statusJson() {
   json += String(gStorageWriteFailures);
   json += ",\"dropped_samples\":";
   json += String(gDroppedSamples);
+  json += ",\"diag_events\":";
+  json += String(gDiagEvents);
+  json += ",\"diag_write_failures\":";
+  json += String(gDiagWriteFailures);
+  json += ",\"diag_dropped_events\":";
+  json += String(gDiagDroppedEvents);
+  json += ",\"diag_bytes\":";
+  json += gLittleFsReady ? String(fileSizeOrZero(kDiagLogPath)) : "0";
+  json += ",\"diag_old_bytes\":";
+  json += gLittleFsReady ? String(fileSizeOrZero(kRotatedDiagLogPath)) : "0";
+  json += ",\"last_diag_ms\":";
+  json += String(gLastDiagMs);
   json += ",\"mount_ok\":";
   json += gLittleFsReady ? "true" : "false";
   json += "},";
@@ -3676,6 +3957,14 @@ String liveJson() {
   json += String(gStorageWriteFailures);
   json += ",\"dropped_samples\":";
   json += String(gDroppedSamples);
+  json += ",\"diag_events\":";
+  json += String(gDiagEvents);
+  json += ",\"diag_write_failures\":";
+  json += String(gDiagWriteFailures);
+  json += ",\"diag_dropped_events\":";
+  json += String(gDiagDroppedEvents);
+  json += ",\"diag_bytes\":";
+  json += gLittleFsReady ? String(fileSizeOrZero(kDiagLogPath)) : "0";
   json += ",\"mount_ok\":";
   json += gLittleFsReady ? "true" : "false";
   json += ",\"live_build_count\":";
@@ -3876,11 +4165,12 @@ String liveJson() {
 
 String healthJson() {
   const bool storageOk = gLittleFsReady && gStorageWriteFailures == 0 && gDroppedSamples == 0;
+  const bool diagnosticsOk = gLittleFsReady && gDiagWriteFailures == 0;
   const bool adcOk = gAdcVoltage.online;
   const bool sensorsOk = gDht.online && gLight.online && gAccel.online && gMic.online && gChipTemp.online && adcOk && gDisplayReady;
   const bool speakerOk = gSpeaker.online && gSpeaker.loopbackPassed;
   const bool cameraOk = boardcamera::isReady();
-  const bool ok = storageOk && sensorsOk && speakerOk && cameraOk && !gAlerts.active;
+  const bool ok = storageOk && diagnosticsOk && sensorsOk && speakerOk && cameraOk && !gAlerts.active;
   const char *state = ok ? "OK" : (gAlerts.active ? "ALERT" : "DEGRADED");
 
   String json;
@@ -3903,6 +4193,8 @@ String healthJson() {
   json += String(gPersistedLastSampleEpoch);
   json += ",\"storage_ok\":";
   json += storageOk ? "true" : "false";
+  json += ",\"diagnostics_ok\":";
+  json += diagnosticsOk ? "true" : "false";
   json += ",\"sensors_ok\":";
   json += sensorsOk ? "true" : "false";
   json += ",\"speaker_ok\":";
@@ -3921,6 +4213,10 @@ String healthJson() {
   json += String(gStorageWriteFailures);
   json += ",\"dropped_samples\":";
   json += String(gDroppedSamples);
+  json += ",\"diag_events\":";
+  json += String(gDiagEvents);
+  json += ",\"diag_write_failures\":";
+  json += String(gDiagWriteFailures);
   json += ",\"setup_complete_ms\":";
   json += String(gBoot.setupCompleteMs);
   json += ",\"history_load_ms\":";
@@ -3954,29 +4250,35 @@ void handleLive() {
 
 void handleSpeakerTest() {
   if (!gMicReady || gSpeaker.testRunning || gSpeaker.speaking) {
+    appendDiagLog("warn", "api", "speaker_test", "speaker self-test request rejected");
     server.send(409, "application/json; charset=utf-8", "{\"accepted\":false}");
     return;
   }
   gSpeakerTestRequested = true;
+  appendDiagLog("info", "api", "speaker_test", "speaker self-test request accepted");
   server.send(202, "application/json; charset=utf-8", "{\"accepted\":true}");
 }
 
 void handleSpeakTemperature() {
   if (!gMicReady || !gDht.online || gSpeaker.testRunning || gSpeaker.speaking) {
+    appendDiagLog("warn", "api", "speak_temperature", "temperature speech request rejected");
     server.send(409, "application/json; charset=utf-8", "{\"accepted\":false}");
     return;
   }
   gSpeakTemperatureRequested = true;
+  appendDiagLog("info", "api", "speak_temperature", "temperature speech request accepted");
   server.send(202, "application/json; charset=utf-8", "{\"accepted\":true}");
 }
 
 void handleConfig() {
   if (server.method() == HTTP_POST) {
+    appendDiagLog("info", "config", "save_request", "configuration save requested");
     HubConfig nextConfig = gConfig;
     float parsedFloat = 0.0f;
     long parsedLong = 0;
     if (server.hasArg("temp_high_c")) {
       if (!parseFloatStrict(server.arg("temp_high_c"), -20.0f, 80.0f, &parsedFloat)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid temp_high_c");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid temp_high_c\"}");
         return;
       }
@@ -3984,6 +4286,7 @@ void handleConfig() {
     }
     if (server.hasArg("humidity_high_pct")) {
       if (!parseFloatStrict(server.arg("humidity_high_pct"), 0.0f, 100.0f, &parsedFloat)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid humidity_high_pct");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid humidity_high_pct\"}");
         return;
       }
@@ -3991,6 +4294,7 @@ void handleConfig() {
     }
     if (server.hasArg("sound_high_dbfs")) {
       if (!parseFloatStrict(server.arg("sound_high_dbfs"), -120.0f, 0.0f, &parsedFloat)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid sound_high_dbfs");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid sound_high_dbfs\"}");
         return;
       }
@@ -3998,6 +4302,7 @@ void handleConfig() {
     }
     if (server.hasArg("light_high_als")) {
       if (!parseLongStrict(server.arg("light_high_als"), 1, 65535, &parsedLong)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid light_high_als");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid light_high_als\"}");
         return;
       }
@@ -4005,6 +4310,7 @@ void handleConfig() {
     }
     if (server.hasArg("cpu_high_pct")) {
       if (!parseFloatStrict(server.arg("cpu_high_pct"), 0.0f, 100.0f, &parsedFloat)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid cpu_high_pct");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid cpu_high_pct\"}");
         return;
       }
@@ -4012,6 +4318,7 @@ void handleConfig() {
     }
     if (server.hasArg("heap_low_bytes")) {
       if (!parseLongStrict(server.arg("heap_low_bytes"), 8192, 320000, &parsedLong)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid heap_low_bytes");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid heap_low_bytes\"}");
         return;
       }
@@ -4019,6 +4326,7 @@ void handleConfig() {
     }
     if (server.hasArg("speaker_alerts")) {
       if (!parseLongStrict(server.arg("speaker_alerts"), 0, 1, &parsedLong)) {
+        appendDiagLog("warn", "config", "save_failed", "invalid speaker_alerts");
         server.send(400, "application/json; charset=utf-8", "{\"saved\":false,\"error\":\"invalid speaker_alerts\"}");
         return;
       }
@@ -4027,6 +4335,7 @@ void handleConfig() {
     gConfig = nextConfig;
     updateAlerts();
     const bool saved = saveConfigToLittleFs();
+    appendDiagLog(saved ? "info" : "error", "config", "save", saved ? "configuration saved" : "configuration save failed");
     server.send(saved ? 200 : 500, "application/json; charset=utf-8", saved ? "{\"saved\":true}" : "{\"saved\":false}");
     return;
   }
@@ -4065,6 +4374,7 @@ void handleCameraStatus() {
 void handleCameraJpeg() {
   camera_fb_t *frame = boardcamera::capture();
   if (!frame) {
+    appendDiagLog("warn", "camera", "jpeg_capture_failed", "single JPEG capture failed");
     server.send(503, "application/json; charset=utf-8", "{\"captured\":false}");
     return;
   }
@@ -4090,6 +4400,13 @@ void streamCameraClient(WiFiClient &client) {
   client.print("Access-Control-Allow-Origin: *\r\n\r\n");
 
   gCameraStreamClients++;
+  static uint32_t lastStreamOpenDiagMs = 0;
+  static uint32_t lastStreamErrorDiagMs = 0;
+  static uint32_t lastStreamCloseDiagMs = 0;
+  if (millis() - lastStreamOpenDiagMs >= 10000UL) {
+    lastStreamOpenDiagMs = millis();
+    appendDiagLog("info", "camera", "stream_client_open", "MJPEG stream client connected");
+  }
   const uint32_t clientStartedAt = millis();
   uint32_t framesThisClient = 0;
   uint32_t fpsWindowStartedAt = millis();
@@ -4106,6 +4423,14 @@ void streamCameraClient(WiFiClient &client) {
     if (!frame) {
       consecutiveMisses++;
       if (consecutiveMisses >= 3) {
+        if (millis() - lastStreamErrorDiagMs >= 5000UL) {
+          lastStreamErrorDiagMs = millis();
+          String detail;
+          detail.reserve(48);
+          detail += "\"misses\":";
+          detail += String(consecutiveMisses);
+          appendDiagLog("warn", "camera", "stream_capture_failed", "MJPEG stream stopped after capture misses", detail);
+        }
         break;
       }
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -4122,6 +4447,16 @@ void streamCameraClient(WiFiClient &client) {
     boardcamera::release(frame);
 
     if (written != frameLen) {
+      if (millis() - lastStreamErrorDiagMs >= 5000UL) {
+        lastStreamErrorDiagMs = millis();
+        String detail;
+        detail.reserve(64);
+        detail += "\"written\":";
+        detail += String(written);
+        detail += ",\"expected\":";
+        detail += String(frameLen);
+        appendDiagLog("warn", "camera", "stream_write_short", "MJPEG stream client write was short", detail);
+      }
       break;
     }
 
@@ -4152,6 +4487,16 @@ void streamCameraClient(WiFiClient &client) {
   gCameraStreamLastClientMs = clientElapsedMs;
   if (gCameraStreamClients > 0) {
     gCameraStreamClients--;
+  }
+  if (framesThisClient == 0 || clientElapsedMs >= 5000UL || millis() - lastStreamCloseDiagMs >= 10000UL) {
+    lastStreamCloseDiagMs = millis();
+    String detail;
+    detail.reserve(80);
+    detail += "\"frames\":";
+    detail += String(framesThisClient);
+    detail += ",\"elapsed_ms\":";
+    detail += String(clientElapsedMs);
+    appendDiagLog(framesThisClient == 0 ? "warn" : "info", "camera", "stream_client_close", "MJPEG stream client disconnected", detail);
   }
 }
 
@@ -4270,10 +4615,12 @@ bool cameraEffectiveValue(const BoardCameraStatus &cam, const String &name, int 
 
 void handleCameraPreset() {
   if (server.method() != HTTP_POST) {
+    appendDiagLog("warn", "camera", "preset_failed", "camera preset rejected: method");
     server.send(405, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
   if (!server.hasArg("preset")) {
+    appendDiagLog("warn", "camera", "preset_failed", "camera preset rejected: missing preset");
     server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"missing_arg\"}");
     return;
   }
@@ -4323,6 +4670,11 @@ void handleCameraPreset() {
     controlCount = sizeof(bright) / sizeof(bright[0]);
     label = "弱光增强";
   } else {
+    String detail;
+    detail.reserve(48);
+    detail += "\"preset\":";
+    appendJsonString(detail, preset.c_str());
+    appendDiagLog("warn", "camera", "preset_failed", "camera preset rejected: unsupported", detail);
     server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_preset\"}");
     return;
   }
@@ -4331,6 +4683,7 @@ void handleCameraPreset() {
     const String controlName = controls[i].name;
     const char *rangeError = "";
     if (!cameraControlValueAllowed(controlName, controls[i].value, &rangeError)) {
+      appendDiagLog("warn", "camera", "preset_failed", "camera preset contains invalid control");
       String json;
       json.reserve(160);
       json += "{\"success\":false,\"applied\":false,\"preset\":\"";
@@ -4350,6 +4703,13 @@ void handleCameraPreset() {
   const bool applied = boardcamera::setControls(controls, controlCount, &appliedCount);
   resumeCameraStreamAfterControls();
   if (!applied) {
+    String detail;
+    detail.reserve(80);
+    detail += "\"preset\":";
+    appendJsonString(detail, preset.c_str());
+    detail += ",\"applied_count\":";
+    detail += String(appliedCount);
+    appendDiagLog("error", "camera", "preset_failed", "camera preset hardware apply failed", detail);
     String json;
     json.reserve(160);
     json += "{\"success\":false,\"applied\":false,\"preset\":\"";
@@ -4387,15 +4747,26 @@ void handleCameraPreset() {
   json += ",\"verified\":";
   json += verifiedCount == controlCount ? "true" : "false";
   json += "}";
+  String detail;
+  detail.reserve(96);
+  detail += "\"preset\":";
+  appendJsonString(detail, preset.c_str());
+  detail += ",\"control_count\":";
+  detail += String(controlCount);
+  detail += ",\"verified_count\":";
+  detail += String(verifiedCount);
+  appendDiagLog(verifiedCount == controlCount ? "info" : "warn", "camera", "preset", verifiedCount == controlCount ? "camera preset verified" : "camera preset partial verification", detail);
   server.send(verifiedCount == controlCount ? 200 : 207, "application/json; charset=utf-8", json);
 }
 
 void handleCameraControl() {
   if (server.method() != HTTP_POST) {
+    appendDiagLog("warn", "camera", "control_failed", "camera control rejected: method");
     server.send(405, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
   if (!server.hasArg("name") || !server.hasArg("value")) {
+    appendDiagLog("warn", "camera", "control_failed", "camera control rejected: missing argument");
     server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"missing_arg\"}");
     return;
   }
@@ -4406,6 +4777,11 @@ void handleCameraControl() {
   if (name == "framesize_name") {
     value = boardcamera::frameSizeFromName(server.arg("value"));
     if (!boardcamera::isSupportedFrameSize(value)) {
+      String detail;
+      detail.reserve(64);
+      detail += "\"requested_name\":";
+      appendJsonString(detail, server.arg("value").c_str());
+      appendDiagLog("warn", "camera", "control_failed", "camera framesize name unsupported", detail);
       server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_framesize\"}");
       return;
     }
@@ -4413,11 +4789,19 @@ void handleCameraControl() {
   } else {
     int32_t parsedValue = 0;
     if (!parseSignedText(server.arg("value"), -10000, 10000, &parsedValue)) {
+      String detail;
+      detail.reserve(72);
+      detail += "\"name\":";
+      appendJsonString(detail, name.c_str());
+      detail += ",\"raw_value\":";
+      appendJsonString(detail, server.arg("value").c_str());
+      appendDiagLog("warn", "camera", "control_failed", "camera control value invalid", detail);
       server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
     value = static_cast<int>(parsedValue);
     if (name == "framesize" && !boardcamera::isSupportedFrameSize(value)) {
+      appendDiagLog("warn", "camera", "control_failed", "camera framesize unsupported");
       server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_framesize\"}");
       return;
     }
@@ -4425,6 +4809,15 @@ void handleCameraControl() {
 
   const char *rangeError = "";
   if (!cameraControlValueAllowed(name, value, &rangeError)) {
+    String detail;
+    detail.reserve(80);
+    detail += "\"name\":";
+    appendJsonString(detail, name.c_str());
+    detail += ",\"value\":";
+    detail += String(value);
+    detail += ",\"error\":";
+    appendJsonString(detail, rangeError);
+    appendDiagLog("warn", "camera", "control_failed", "camera control rejected by range", detail);
     String json;
     json.reserve(120);
     json += "{\"success\":false,\"applied\":false,\"error\":\"";
@@ -4438,6 +4831,13 @@ void handleCameraControl() {
   const bool ok = boardcamera::setControl(name, value);
   resumeCameraStreamAfterControls();
   if (!ok) {
+    String detail;
+    detail.reserve(64);
+    detail += "\"name\":";
+    appendJsonString(detail, name.c_str());
+    detail += ",\"value\":";
+    detail += String(value);
+    appendDiagLog("error", "camera", "control_failed", "camera hardware control apply failed", detail);
     server.send(400, "application/json; charset=utf-8", "{\"success\":false,\"applied\":false,\"error\":\"unsupported_control\"}");
     return;
   }
@@ -4466,6 +4866,17 @@ void handleCameraControl() {
     json += "\"";
   }
   json += "}";
+  String detail;
+  detail.reserve(110);
+  detail += "\"name\":";
+  appendJsonString(detail, name.c_str());
+  detail += ",\"value\":";
+  detail += String(value);
+  detail += ",\"effective\":";
+  detail += String(hasEffective ? effective : -1);
+  detail += ",\"verified\":";
+  detail += verified ? "true" : "false";
+  appendDiagLog(verified ? "info" : "warn", "camera", "control", verified ? "camera control verified" : "camera control readback mismatch", detail);
   server.send(200, "application/json; charset=utf-8", json);
 }
 
@@ -4598,6 +5009,25 @@ void sendPeripheralControlResult(bool ok,
                                  int effective,
                                  const char *error = "",
                                  bool verifiedOverride = false) {
+  const bool verified = verifiedOverride || (ok && static_cast<int>(requested) == effective);
+  String detail;
+  detail.reserve(140);
+  detail += "\"device\":";
+  appendJsonString(detail, device);
+  detail += ",\"name\":";
+  appendJsonString(detail, name);
+  detail += ",\"value\":";
+  detail += String(requested);
+  detail += ",\"effective\":";
+  detail += String(effective);
+  detail += ",\"verified\":";
+  detail += verified ? "true" : "false";
+  if (error && error[0]) {
+    detail += ",\"error\":";
+    appendJsonString(detail, error);
+  }
+  appendDiagLog(verified ? "info" : "warn", "peripheral", "control", verified ? "peripheral control verified" : "peripheral control failed or mismatched", detail);
+
   String json;
   json.reserve(220);
   json += "{\"applied\":";
@@ -4611,7 +5041,7 @@ void sendPeripheralControlResult(bool ok,
   json += ",\"effective\":";
   json += String(effective);
   json += ",\"verified\":";
-  json += (verifiedOverride || (ok && static_cast<int>(requested) == effective)) ? "true" : "false";
+  json += verified ? "true" : "false";
   if (!ok && error && error[0]) {
     json += ",\"error\":\"";
     json += error;
@@ -4623,10 +5053,12 @@ void sendPeripheralControlResult(bool ok,
 
 void handlePeripheralControl() {
   if (server.method() != HTTP_POST) {
+    appendDiagLog("warn", "peripheral", "control_failed", "peripheral control rejected: method");
     server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
   if (!server.hasArg("device") || !server.hasArg("name") || !server.hasArg("value")) {
+    appendDiagLog("warn", "peripheral", "control_failed", "peripheral control rejected: missing argument");
     server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"missing_arg\"}");
     return;
   }
@@ -4635,6 +5067,7 @@ void handlePeripheralControl() {
   const String name = server.arg("name");
   uint32_t requested = 0;
   if (!parseDecimalUnsignedArg("value", 65535, &requested)) {
+    appendDiagLog("warn", "peripheral", "control_failed", "peripheral control rejected: invalid value");
     server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
     return;
   }
@@ -4982,11 +5415,19 @@ void handlePeripheralControl() {
     return;
   }
 
+  String detail;
+  detail.reserve(80);
+  detail += "\"device\":";
+  appendJsonString(detail, device.c_str());
+  detail += ",\"name\":";
+  appendJsonString(detail, name.c_str());
+  appendDiagLog("warn", "peripheral", "control_failed", "unsupported peripheral control", detail);
   server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"unsupported_control\"}");
 }
 
 void handleRegisterAccess() {
   if (server.method() != HTTP_GET && server.method() != HTTP_POST) {
+    appendDiagLog("warn", "register", "access_failed", "register access rejected: method");
     server.send(405, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"method_not_allowed\"}");
     return;
   }
@@ -4995,10 +5436,12 @@ void handleRegisterAccess() {
   uint32_t regValue = 0;
   uint32_t maskValue = 255;
   if (device == RegisterDevice::kInvalid || !parseDecimalUnsignedArg("reg", 65535, &regValue)) {
+    appendDiagLog("warn", "register", "access_failed", "register access rejected: invalid request");
     server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_request\"}");
     return;
   }
   if (server.hasArg("mask") && !parseDecimalUnsignedArg("mask", 255, &maskValue)) {
+    appendDiagLog("warn", "register", "access_failed", "register access rejected: invalid mask");
     server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"invalid_mask\"}");
     return;
   }
@@ -5006,6 +5449,7 @@ void handleRegisterAccess() {
   const uint16_t reg = static_cast<uint16_t>(regValue);
   const uint8_t mask = static_cast<uint8_t>(maskValue);
   if (!registerAddressAllowed(device, reg)) {
+    appendDiagLog("warn", "register", "access_failed", "register access rejected: address out of range");
     server.send(400, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"reg_out_of_range\"}");
     return;
   }
@@ -5052,11 +5496,29 @@ void handleRegisterAccess() {
     json += "\"";
   }
   json += "}";
+  String detail;
+  detail.reserve(120);
+  detail += "\"device\":";
+  appendJsonString(detail, registerDeviceName(device));
+  detail += ",\"reg\":";
+  detail += String(reg);
+  detail += ",\"mask\":";
+  detail += String(mask);
+  detail += ",\"write\":";
+  detail += server.method() == HTTP_POST ? "true" : "false";
+  detail += ",\"value\":";
+  detail += String(value);
+  if (error && error[0]) {
+    detail += ",\"error\":";
+    appendJsonString(detail, error);
+  }
+  appendDiagLog(ok ? "info" : "warn", "register", server.method() == HTTP_POST ? "write" : "read", ok ? "register access completed" : "register access failed", detail);
   server.send(ok ? 200 : statusCode, "application/json; charset=utf-8", json);
 }
 
 void handleSystemControl() {
   if (server.method() != HTTP_POST) {
+    appendDiagLog("warn", "system", "control_failed", "system control rejected: method");
     server.send(405, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"POST required\"}");
     return;
   }
@@ -5069,6 +5531,7 @@ void handleSystemControl() {
   if (server.hasArg("cpu_mhz")) {
     int32_t mhz = 0;
     if (!parseSignedText(server.arg("cpu_mhz"), 80, 240, &mhz)) {
+      appendDiagLog("warn", "system", "control_failed", "CPU MHz control rejected: invalid value");
       server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
@@ -5084,6 +5547,7 @@ void handleSystemControl() {
   } else if (server.hasArg("wifi_tx_power")) {
     int32_t power = 0;
     if (!parseSignedText(server.arg("wifi_tx_power"), WIFI_POWER_MINUS_1dBm, WIFI_POWER_19_5dBm, &power)) {
+      appendDiagLog("warn", "system", "control_failed", "WiFi TX power control rejected: invalid value");
       server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
       return;
     }
@@ -5119,11 +5583,23 @@ void handleSystemControl() {
     json += "\"";
   }
   json += "}";
+  String detail;
+  detail.reserve(96);
+  detail += "\"name\":";
+  appendJsonString(detail, name.c_str());
+  detail += ",\"value\":";
+  detail += String(requested);
+  detail += ",\"effective\":";
+  detail += String(effective);
+  detail += ",\"verified\":";
+  detail += verified ? "true" : "false";
+  appendDiagLog(verified ? "info" : "warn", "system", "control", verified ? "system control verified" : "system control failed or mismatched", detail);
   server.send(verified ? 200 : 400, "application/json; charset=utf-8", json);
 }
 
 void handleFlush() {
   const bool ok = flushPendingLog();
+  appendDiagLog(ok ? "info" : "error", "storage", "flush", ok ? "CSV log flush completed" : "CSV log flush failed");
   String json;
   json.reserve(120);
   json += "{\"flushed\":";
@@ -5141,6 +5617,7 @@ void handleDisplayReinit() {
   gLiveJsonCache = "";
   gLiveJsonCacheMs = 0;
   const bool ok = gDisplayReady && gDisplayRecovery.powerHigh && gDisplayRecovery.resetHigh && gDisplayRecovery.pinsOutput;
+  appendDiagLog(ok ? "info" : "error", "display", "reinit", ok ? "display reinit verified" : "display reinit failed");
   String json;
   json.reserve(420);
   json += "{\"applied\":";
@@ -5155,6 +5632,7 @@ void handleDisplayTest() {
   drawDisplayVisibleTest("HTTP TEST", 30000UL);
   gLiveJsonCache = "";
   gLiveJsonCacheMs = 0;
+  appendDiagLog(gDisplayReady ? "info" : "warn", "display", "visible_test", gDisplayReady ? "display visible test pattern requested" : "display visible test requested while display offline");
   String json;
   json.reserve(420);
   json += "{\"applied\":";
@@ -5168,6 +5646,7 @@ void handleDisplayTest() {
 void handleReboot() {
   const bool ok = flushPendingLog();
   if (!ok) {
+    appendDiagLog("error", "system", "reboot_failed", "reboot rejected because CSV flush failed");
     String json;
     json.reserve(120);
     json += "{\"rebooting\":false,\"pending_bytes\":";
@@ -5178,6 +5657,7 @@ void handleReboot() {
     server.send(500, "application/json; charset=utf-8", json);
     return;
   }
+  appendDiagLog("info", "system", "reboot", "software reboot accepted");
   server.send(202, "application/json; charset=utf-8", "{\"rebooting\":true,\"flushed\":true}");
   gRebootRequested = true;
 }
@@ -5212,6 +5692,100 @@ void handleLogDownload() {
   server.sendContent("");
 }
 
+void streamLittleFsFiles(const char *contentType, const char *oldPath, const char *path) {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, contentType, "");
+  const char *paths[] = {oldPath, path};
+  uint8_t buffer[256];
+  for (size_t i = 0; i < 2; i++) {
+    if (!paths[i] || !LittleFS.exists(paths[i])) {
+      continue;
+    }
+    File file = LittleFS.open(paths[i], "r");
+    if (!file) {
+      continue;
+    }
+    while (file.available()) {
+      const size_t bytesRead = file.read(buffer, sizeof(buffer));
+      if (bytesRead == 0) {
+        break;
+      }
+      server.sendContent(reinterpret_cast<const char *>(buffer), bytesRead);
+    }
+    file.close();
+  }
+  server.sendContent("");
+}
+
+String diagnosticsJson() {
+  size_t bytes = 0;
+  size_t oldBytes = 0;
+  if (takeDiagLogLock(pdMS_TO_TICKS(500))) {
+    bytes = fileSizeOrZero(kDiagLogPath);
+    oldBytes = fileSizeOrZero(kRotatedDiagLogPath);
+    giveDiagLogLock();
+  }
+
+  String json;
+  json.reserve(360);
+  json += "{\"mounted\":";
+  json += gLittleFsReady ? "true" : "false";
+  json += ",\"events\":";
+  json += String(gDiagEvents);
+  json += ",\"write_failures\":";
+  json += String(gDiagWriteFailures);
+  json += ",\"dropped_events\":";
+  json += String(gDiagDroppedEvents);
+  json += ",\"last_event_ms\":";
+  json += String(gLastDiagMs);
+  json += ",\"bytes\":";
+  json += String(bytes);
+  json += ",\"old_bytes\":";
+  json += String(oldBytes);
+  json += ",\"path\":\"";
+  json += kDiagLogPath;
+  json += "\",\"rotated_path\":\"";
+  json += kRotatedDiagLogPath;
+  json += "\"}";
+  return json;
+}
+
+void handleDiagnostics() {
+  server.send(gLittleFsReady ? 200 : 500, "application/json; charset=utf-8", diagnosticsJson());
+}
+
+void handleDiagLogDownload() {
+  if (!gLittleFsReady || (!LittleFS.exists(kRotatedDiagLogPath) && !LittleFS.exists(kDiagLogPath))) {
+    server.send(404, "text/plain", "diagnostic log not found");
+    return;
+  }
+  if (!takeDiagLogLock(pdMS_TO_TICKS(1000))) {
+    server.send(503, "text/plain", "diagnostic log busy");
+    return;
+  }
+  streamLittleFsFiles("application/x-ndjson; charset=utf-8", kRotatedDiagLogPath, kDiagLogPath);
+  giveDiagLogLock();
+}
+
+void handleDiagnosticsClear() {
+  if (!gLittleFsReady) {
+    server.send(500, "application/json; charset=utf-8", "{\"cleared\":false,\"error\":\"littlefs_offline\"}");
+    return;
+  }
+  if (!takeDiagLogLock(pdMS_TO_TICKS(1000))) {
+    server.send(503, "application/json; charset=utf-8", "{\"cleared\":false,\"error\":\"diagnostic_log_busy\"}");
+    return;
+  }
+  LittleFS.remove(kDiagLogPath);
+  LittleFS.remove(kRotatedDiagLogPath);
+  gDiagEvents = 0;
+  gDiagWriteFailures = 0;
+  gDiagDroppedEvents = 0;
+  gLastDiagMs = 0;
+  giveDiagLogLock();
+  server.send(200, "application/json; charset=utf-8", "{\"cleared\":true}");
+}
+
 void setupServer() {
   const unsigned long startedAt = millis();
   server.on("/", HTTP_GET, handleRoot);
@@ -5234,12 +5808,16 @@ void setupServer() {
   server.on("/api/display/test", HTTP_POST, handleDisplayTest);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/log.csv", HTTP_GET, handleLogDownload);
+  server.on("/api/diagnostics", HTTP_GET, handleDiagnostics);
+  server.on("/api/diagnostics/log", HTTP_GET, handleDiagLogDownload);
+  server.on("/api/diagnostics/clear", HTTP_POST, handleDiagnosticsClear);
   server.begin();
   cameraStreamServer.begin();
   if (!gCameraStreamTask) {
     xTaskCreatePinnedToCore(cameraStreamTask, "camera_stream", 6144, nullptr, 1, &gCameraStreamTask, 0);
   }
   gBoot.serverStartMs = millis() - startedAt;
+  appendDiagLog("info", "network", "server_start", "HTTP and camera stream servers started");
 }
 
 void printStatusReport() {
@@ -5327,6 +5905,7 @@ void setup() {
   Serial.println("ESP32-S3 Sensor Hub boot");
   Serial.println("Reference sources: DHT11 + AP3216C + QMA6100P + ES8388 from ALIENTEK examples");
 
+  gDiagLogMutex = xSemaphoreCreateMutex();
   Wire.begin(kI2cSdaPin, kI2cSclPin, 400000);
   DHT11_MODE_IN;
   initChipTemperature();
@@ -5341,8 +5920,21 @@ void setup() {
   gMicReady = es8388codec::beginMic();
   gSpeaker.online = gMicReady && es8388codec::isReady();
   initAdcVoltage();
-  boardcamera::begin();
+  const bool cameraReady = boardcamera::begin();
   gBoot.sensorsInitMs = millis() - sensorsStartedAt;
+  String sensorDetail;
+  sensorDetail.reserve(150);
+  sensorDetail += "\"ap3216c\":";
+  sensorDetail += gAp3216Ready ? "true" : "false";
+  sensorDetail += ",\"qma6100p\":";
+  sensorDetail += gQmaReady ? "true" : "false";
+  sensorDetail += ",\"es8388\":";
+  sensorDetail += gMicReady ? "true" : "false";
+  sensorDetail += ",\"camera\":";
+  sensorDetail += cameraReady ? "true" : "false";
+  sensorDetail += ",\"elapsed_ms\":";
+  sensorDetail += String(gBoot.sensorsInitMs);
+  appendDiagLog((gAp3216Ready && gQmaReady && gMicReady && cameraReady) ? "info" : "warn", "boot", "sensors_init", "sensor initialization completed", sensorDetail);
 
   setupServer();
   updateSystemStatsIfDue();

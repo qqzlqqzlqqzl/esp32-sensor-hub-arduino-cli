@@ -998,6 +998,58 @@ function Test-PeripheralControls {
     }
 }
 
+function Test-DiagnosticLogging {
+    param([string]$Ip)
+
+    Invoke-CurlPost ('http://' + $Ip + '/api/diagnostics/clear') -TimeoutSeconds 6 | Out-Null
+    $emptyDiagText = Invoke-Curl ('http://' + $Ip + '/api/diagnostics') -TimeoutSeconds 6
+    $emptyDiagJson = $emptyDiagText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=99') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=9') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/register?device=xl9555&reg=2&mask=255&value=255') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/config?light_high_als=-1&heap_low_bytes=abc') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/system/control?cpu_mhz=123') -TimeoutSeconds 6 | Out-Null
+    Start-Sleep -Milliseconds 500
+
+    $diagText = Invoke-Curl ('http://' + $Ip + '/api/diagnostics') -TimeoutSeconds 6
+    $diagJson = $diagText | ConvertFrom-Json
+    $logText = Invoke-Curl ('http://' + $Ip + '/api/diagnostics/log') -TimeoutSeconds 8
+    $containsCamera = $logText.Contains('"component":"camera"')
+    $containsPeripheral = $logText.Contains('"component":"peripheral"')
+    $containsRegister = $logText.Contains('"component":"register"')
+    $containsConfig = $logText.Contains('"component":"config"')
+    $containsSystem = $logText.Contains('"component":"system"')
+    $jsonlLines = @($logText -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+    $parseOk = $true
+    foreach ($line in $jsonlLines) {
+        try {
+            $line | ConvertFrom-Json | Out-Null
+        }
+        catch {
+            $parseOk = $false
+            break
+        }
+    }
+
+    $clearOk = ([int]$emptyDiagJson.events -eq 0) -and ([int]$emptyDiagJson.bytes -eq 0) -and ([int]$emptyDiagJson.old_bytes -eq 0)
+    $ok = $clearOk -and
+        ($diagJson.mounted -eq $true) -and
+        ([int]$diagJson.events -ge 5) -and
+        ([int]$diagJson.bytes -gt 200) -and
+        ([int]$diagJson.write_failures -eq 0) -and
+        $containsCamera -and
+        $containsPeripheral -and
+        $containsRegister -and
+        $containsConfig -and
+        $containsSystem -and
+        $parseOk
+
+    return [pscustomobject]@{
+        Passed = $ok
+        Details = ('clear_ok={0} events={1} bytes={2} failures={3} lines={4} camera={5} peripheral={6} register={7} config={8} system={9} jsonl={10}' -f $clearOk, $diagJson.events, $diagJson.bytes, $diagJson.write_failures, $jsonlLines.Count, $containsCamera, $containsPeripheral, $containsRegister, $containsConfig, $containsSystem, $parseOk)
+    }
+}
+
 function Test-BootTelemetry {
     param([object]$StatusJson)
 
@@ -1705,6 +1757,9 @@ try {
     $peripheralControls = Test-PeripheralControls -Ip $ip
     Add-Result 'Peripheral Preset Controls' $peripheralControls.Passed $peripheralControls.Details
 
+    $diagnosticLogging = Test-DiagnosticLogging -Ip $ip
+    Add-Result 'Persistent Diagnostic Logging' $diagnosticLogging.Passed $diagnosticLogging.Details
+
     $liveSoak = Test-LiveCadenceSoak -Ip $ip -DurationSeconds 20
     Add-Result 'API Live 2Hz Soak' $liveSoak.Passed $liveSoak.Details
 
@@ -1760,7 +1815,12 @@ try {
         $htmlText.Contains('/api/speaker_test') -and
         $htmlText.Contains('/api/speak_temperature') -and
         $htmlText.Contains('/api/config') -and
+        $htmlText.Contains('/api/diagnostics') -and
+        $htmlText.Contains('/api/diagnostics/log') -and
+        $htmlText.Contains('/api/diagnostics/clear') -and
         $htmlText.Contains('查看 CSV 日志') -and
+        $htmlText.Contains('查看诊断日志') -and
+        $htmlText.Contains('清空诊断日志') -and
         $htmlText.Contains('输入电压 ADC') -and
         $htmlText.Contains('adcVoltage') -and
         $htmlText.Contains('adcState') -and
@@ -1848,6 +1908,7 @@ $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry an
 $reportLines += '- LCD recovery can be triggered without a board power-cycle, holds a high-contrast visible pixel test pattern, and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
 $reportLines += '- Camera JPEG capture, OPI PSRAM availability, active-stream camera controls and safe decimal hardware register access are verified through HTTP APIs'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
+$reportLines += '- LittleFS diagnostic JSONL logging records camera, peripheral, register, config and system errors and is exposed through dashboard/API download and clear controls'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified dropdown camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Normal camera and peripheral settings use dropdown selectors, with manual decimal register input retained only for diagnostics'
 $reportLines += '- Status LED blink rate is linked to CPU usage and exposed through /api/status and /api/live telemetry'
