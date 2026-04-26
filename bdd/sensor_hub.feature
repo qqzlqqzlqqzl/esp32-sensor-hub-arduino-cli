@@ -53,7 +53,9 @@ Feature: ESP32 Sensor Hub Dashboard
     And the dashboard edit-lock JavaScript behavior should pass a host-side executable test
     And one-click camera presets should round-trip through /api/camera/preset
     And normal camera and peripheral settings should be exposed as dropdown selectors instead of manual numeric inputs
-    And AP3216C mode, QMA6100P range, and ES8388 volume presets should round-trip through /api/peripheral/control
+    And AP3216C mode, interrupt clear, ALS/PS threshold and calibration presets should round-trip through /api/peripheral/control
+    And QMA6100P range, bandwidth, power, interrupt latch, step, tap and motion presets should round-trip through /api/peripheral/control
+    And ES8388 volume, mic gain, input channel, ALC, 3D, sample-rate and EQ presets should round-trip through /api/peripheral/control
     And out-of-range preset values should be rejected with explicit errors
 
   Scenario: 2Hz live polling remains stable

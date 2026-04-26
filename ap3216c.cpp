@@ -70,4 +70,44 @@ bool writeRegister(uint8_t reg, uint8_t value) {
   return writeReg(reg, value);
 }
 
+bool setMode(uint8_t mode) {
+  if (!((mode <= 3) || (mode >= 5 && mode <= 7))) {
+    return false;
+  }
+  return writeReg(0x00, mode);
+}
+
+bool setAlsThreshold(uint16_t low, uint16_t high) {
+  return writeReg(0x1A, static_cast<uint8_t>(low & 0xFF)) &&
+         writeReg(0x1B, static_cast<uint8_t>((low >> 8) & 0xFF)) &&
+         writeReg(0x1C, static_cast<uint8_t>(high & 0xFF)) &&
+         writeReg(0x1D, static_cast<uint8_t>((high >> 8) & 0xFF));
+}
+
+bool setPsThreshold(uint16_t low, uint16_t high) {
+  low &= 0x03FF;
+  high &= 0x03FF;
+  return writeReg(0x2A, static_cast<uint8_t>(low & 0x03)) &&
+         writeReg(0x2B, static_cast<uint8_t>((low >> 2) & 0xFF)) &&
+         writeReg(0x2C, static_cast<uint8_t>(high & 0x03)) &&
+         writeReg(0x2D, static_cast<uint8_t>((high >> 2) & 0xFF));
+}
+
+bool setAlsCalibration(uint8_t value) {
+  return writeReg(0x19, value);
+}
+
+bool setPsCalibration(uint16_t value) {
+  value &= 0x01FF;
+  return writeReg(0x28, static_cast<uint8_t>(value & 0x01)) &&
+         writeReg(0x29, static_cast<uint8_t>((value >> 1) & 0xFF));
+}
+
+bool setIntClearMode(uint8_t mode) {
+  if (mode > 1) {
+    return false;
+  }
+  return writeReg(0x02, mode);
+}
+
 }  // namespace ap3216c

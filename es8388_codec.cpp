@@ -14,10 +14,10 @@ constexpr gpio_num_t kI2sWsPin = GPIO_NUM_9;
 constexpr gpio_num_t kI2sDoPin = GPIO_NUM_10;
 constexpr gpio_num_t kI2sDiPin = GPIO_NUM_14;
 constexpr gpio_num_t kI2sMclkPin = GPIO_NUM_3;
-constexpr uint32_t kSampleRate = 16000;
 
 bool gReady = false;
 bool gDriverInstalled = false;
+uint32_t gSampleRate = 16000;
 
 void setSpeakerEnabled(bool enabled) {
   xl9555_pin_set(SPK_EN, enabled ? IO_SET_LOW : IO_SET_HIGH);
@@ -122,7 +122,7 @@ bool analyzeMicBuffer(const int16_t *buffer, size_t sampleCount, MicLevelReading
 void fillToneBuffer(int16_t *buffer, size_t frameCount, uint16_t frequencyHz, float amplitude, size_t *phaseCursor) {
   for (size_t i = 0; i < frameCount; i++) {
     const float phase = (2.0f * static_cast<float>(M_PI) * static_cast<float>(*phaseCursor) * static_cast<float>(frequencyHz)) /
-                        static_cast<float>(kSampleRate);
+                        static_cast<float>(gSampleRate);
     const int16_t sample = static_cast<int16_t>(sinf(phase) * amplitude * 32767.0f);
     buffer[i * 2] = sample;
     buffer[i * 2 + 1] = sample;
@@ -192,7 +192,7 @@ bool measureTonePhase(bool speakerEnabled,
 
   size_t phaseCursor = 0;
   const size_t frameCount = sizeof(txBuffer) / sizeof(txBuffer[0]) / 2;
-  const uint32_t totalFrames = (static_cast<uint32_t>(durationMs) * kSampleRate) / 1000U;
+  const uint32_t totalFrames = (static_cast<uint32_t>(durationMs) * gSampleRate) / 1000U;
   uint32_t processedFrames = 0;
 
   while (processedFrames < totalFrames) {
@@ -222,7 +222,7 @@ bool measureTonePhase(bool speakerEnabled,
     processedFrames += static_cast<uint32_t>(chunkFrames);
   }
 
-  writeSilenceFrames(kSampleRate / 40U);
+  writeSilenceFrames(gSampleRate / 40U);
   setSpeakerEnabled(false);
   delay(10);
   return reading->online;
@@ -281,7 +281,7 @@ bool beginMic() {
 
   i2s_config_t config = {};
   config.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX);
-  config.sample_rate = kSampleRate;
+  config.sample_rate = gSampleRate;
   config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
   config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
@@ -344,7 +344,7 @@ bool playMonoPcm(const int16_t *samples, size_t sampleCount, uint8_t volume) {
   setSpeakerEnabled(true);
   delay(12);
 
-  const bool ok = writeMonoSamples(samples, sampleCount) && writeSilenceFrames(kSampleRate / 24U);
+  const bool ok = writeMonoSamples(samples, sampleCount) && writeSilenceFrames(gSampleRate / 24U);
   setSpeakerEnabled(false);
   delay(8);
   return ok;
@@ -363,7 +363,7 @@ bool playTone(uint16_t frequencyHz, uint16_t durationMs, uint8_t volume) {
 
   size_t phaseCursor = 0;
   const size_t frameCount = sizeof(buffer) / sizeof(buffer[0]) / 2;
-  const uint32_t totalFrames = (static_cast<uint32_t>(durationMs) * kSampleRate) / 1000U;
+  const uint32_t totalFrames = (static_cast<uint32_t>(durationMs) * gSampleRate) / 1000U;
   uint32_t writtenFrames = 0;
   const float amplitude = 0.22f;
 
@@ -377,7 +377,7 @@ bool playTone(uint16_t frequencyHz, uint16_t durationMs, uint8_t volume) {
     }
     writtenFrames += static_cast<uint32_t>(chunkFrames);
   }
-  const bool ok = writeSilenceFrames(kSampleRate / 24U);
+  const bool ok = writeSilenceFrames(gSampleRate / 24U);
   setSpeakerEnabled(false);
   delay(8);
   return ok;
@@ -444,6 +444,88 @@ bool readRegister(uint8_t reg, uint8_t *value) {
 
 bool writeRegister(uint8_t reg, uint8_t value) {
   return writeReg(reg, value);
+}
+
+bool setMicGain(uint8_t gain) {
+  if (gain > 8) {
+    return false;
+  }
+  micGain(gain);
+  return true;
+}
+
+bool setInputChannel(uint8_t input) {
+  if (input > 1) {
+    return false;
+  }
+  inputCfg(input);
+  return true;
+}
+
+bool setAlcPreset(uint8_t preset) {
+  switch (preset) {
+    case 0:
+      alcCtrl(0, 7, 0);
+      return true;
+    case 1:
+      alcCtrl(3, 5, 1);
+      writeReg(0x13, 0x70);
+      writeReg(0x14, 0x32);
+      writeReg(0x15, 0x06);
+      return true;
+    case 2:
+      alcCtrl(3, 7, 0);
+      writeReg(0x13, 0x90);
+      writeReg(0x14, 0x21);
+      writeReg(0x15, 0x86);
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool set3dDepth(uint8_t depth) {
+  if (depth > 7) {
+    return false;
+  }
+  return writeReg(0x1D, static_cast<uint8_t>(depth << 2));
+}
+
+bool setAdcDacSampleRate(uint32_t sampleRate) {
+  if (!(sampleRate == 8000 || sampleRate == 16000 || sampleRate == 22050 || sampleRate == 32000)) {
+    return false;
+  }
+  if (gDriverInstalled && i2s_set_clk(kI2sPort, sampleRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO) != ESP_OK) {
+    return false;
+  }
+  gSampleRate = sampleRate;
+  return true;
+}
+
+uint32_t currentSampleRate() {
+  return gSampleRate;
+}
+
+bool setEqPreset(uint8_t preset) {
+  static const uint8_t flat[] = {0x1F, 0xF7, 0xFD, 0xFF, 0x1F, 0xF7, 0xFD, 0xFF};
+  static const uint8_t voice[] = {0x17, 0xF1, 0xF8, 0xFF, 0x26, 0xF9, 0xFD, 0xFF};
+  const uint8_t *profile = nullptr;
+  switch (preset) {
+    case 0:
+      profile = flat;
+      break;
+    case 1:
+      profile = voice;
+      break;
+    default:
+      return false;
+  }
+  for (uint8_t i = 0; i < 8; i++) {
+    if (!writeReg(static_cast<uint8_t>(0x1E + i), profile[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace es8388codec

@@ -30,6 +30,13 @@ void endMic();
 bool isReady();
 bool readRegister(uint8_t reg, uint8_t *value);
 bool writeRegister(uint8_t reg, uint8_t value);
+bool setMicGain(uint8_t gain);
+bool setInputChannel(uint8_t input);
+bool setAlcPreset(uint8_t preset);
+bool set3dDepth(uint8_t depth);
+bool setAdcDacSampleRate(uint32_t sampleRate);
+uint32_t currentSampleRate();
+bool setEqPreset(uint8_t preset);
 }
 
 #endif

@@ -20,6 +20,12 @@ bool readRegister(uint8_t reg, uint8_t *value);
 bool writeRegister(uint8_t reg, uint8_t value);
 bool setRangeG(uint8_t rangeG);
 uint8_t currentRangeG();
+bool setBandwidth(uint8_t bandwidth);
+bool setPowerMode(uint8_t value);
+bool setInterruptLatch(bool enabled);
+bool setStepInterrupt(bool enabled, uint8_t map);
+bool setTapPreset(uint8_t preset);
+bool setMotionPreset(uint8_t preset);
 }
 
 #endif

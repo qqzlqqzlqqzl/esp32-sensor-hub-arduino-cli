@@ -24,13 +24,8 @@
 #include "spilcd.h"
 #include "xl9555.h"
 
-#ifndef WIFI_STA_SSID
-#define WIFI_STA_SSID ""
-#endif
-
-#ifndef WIFI_STA_PASS
-#define WIFI_STA_PASS ""
-#endif
+#define SENSOR_HUB_STRINGIFY_INNER(value) #value
+#define SENSOR_HUB_STRINGIFY(value) SENSOR_HUB_STRINGIFY_INNER(value)
 
 #ifndef ADC_VOLTAGE_PIN
 #define ADC_VOLTAGE_PIN 8
@@ -86,8 +81,17 @@ constexpr size_t kRuntimeTrackCapacity = 32;
 constexpr uint8_t kAdcVoltagePin = ADC_VOLTAGE_PIN;
 constexpr float kAdcVoltageScale = ADC_VOLTAGE_SCALE;
 
-constexpr char kStaSsid[] = WIFI_STA_SSID;
-constexpr char kStaPass[] = WIFI_STA_PASS;
+#ifdef WIFI_STA_SSID
+constexpr char kStaSsid[] = SENSOR_HUB_STRINGIFY(WIFI_STA_SSID);
+#else
+constexpr char kStaSsid[] = "";
+#endif
+
+#ifdef WIFI_STA_PASS
+constexpr char kStaPass[] = SENSOR_HUB_STRINGIFY(WIFI_STA_PASS);
+#else
+constexpr char kStaPass[] = "";
+#endif
 
 WebServer server(80);
 WiFiServer cameraStreamServer(kCameraStreamPort);
@@ -143,6 +147,27 @@ bool gMicReady = false;
 uint8_t gAp3216Mode = 3;
 uint8_t gSpeakerVolume = 26;
 uint8_t gHeadphoneVolume = 18;
+uint16_t gApAlsLowThreshold = 0;
+uint16_t gApAlsHighThreshold = 65535;
+uint16_t gApPsLowThreshold = 0;
+uint16_t gApPsHighThreshold = 1023;
+uint8_t gApAlsCalibration = 64;
+uint16_t gApPsCalibration = 0;
+uint8_t gApAlsThresholdPreset = 0;
+uint8_t gApPsThresholdPreset = 0;
+uint8_t gApCalibrationPreset = 0;
+uint8_t gApIntClearMode = 0;
+uint8_t gQmaBandwidth = 0;
+uint8_t gQmaPowerMode = 0x84;
+uint8_t gQmaStepInterrupt = 1;
+uint8_t gQmaTapPreset = 0;
+uint8_t gQmaMotionPreset = 0;
+bool gQmaInterruptLatch = true;
+uint8_t gEsMicGain = 8;
+uint8_t gEsInputChannel = 0;
+uint8_t gEsAlcPreset = 0;
+uint8_t gEs3dDepth = 0;
+uint8_t gEsEqPreset = 0;
 bool gLittleFsReady = false;
 bool gLittleFsMountError = false;
 bool gChipTempReady = false;
@@ -688,21 +713,40 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
           <div><span>ES8388 喇叭音量</span><select id="speakerVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="22">22 较高</option><option value="26" selected>26 默认</option><option value="30">30 高</option><option value="33">33 最大</option></select></div>
           <div><span>ES8388 耳机音量</span><select id="headphoneVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="18" selected>18 默认</option><option value="22">22 较高</option><option value="26">26 高</option><option value="33">33 最大</option></select></div>
           <div><span>ES8388 全部音量</span><select id="allVolumeControl"><option value="0">0 静音</option><option value="8">8 很低</option><option value="16">16 中等</option><option value="22">22 较高</option><option value="26" selected>26 默认</option><option value="30">30 高</option><option value="33">33 最大</option></select></div>
+          <div><span>AP3216C ALS 阈值</span><select id="apAlsThresholdControl"><option value="0" selected>0 全范围 0-65535</option><option value="1">1 室内提醒 50-1000</option><option value="2">2 亮光提醒 1000-5000</option></select></div>
+          <div><span>AP3216C 接近阈值</span><select id="apPsThresholdControl"><option value="0" selected>0 全范围 0-1023</option><option value="1">1 近距 80-500</option><option value="2">2 强接近 500-900</option></select></div>
+          <div><span>AP3216C 校准</span><select id="apCalibrationControl"><option value="0" selected>0 无补偿 64/64</option><option value="1">1 轻微遮罩补偿 80/64</option><option value="2">2 中等遮罩补偿 128/64</option><option value="3">3 强遮罩补偿 192/64</option></select></div>
+          <div><span>AP3216C 中断清除</span><select id="apIntClearControl"><option value="0" selected>0 读数据自动清除</option><option value="1">1 写状态手动清除</option></select></div>
+          <div><span>QMA6100P 带宽/ODR</span><select id="qmaBandwidthControl"><option value="7">7 6.25Hz 低功耗</option><option value="6">6 12.5Hz</option><option value="5">5 50Hz</option><option value="0" selected>0 100Hz 默认</option><option value="1">1 200Hz</option><option value="2">2 400Hz</option><option value="3">3 800Hz</option></select></div>
+          <div><span>QMA6100P 电源模式</span><select id="qmaPowerControl"><option value="0">0 待机</option><option value="128">128 模拟 active</option><option value="132" selected>132 数字 active</option><option value="135">135 低 MCLK active</option></select></div>
+          <div><span>QMA6100P 步数中断</span><select id="qmaStepControl"><option value="0">0 关闭</option><option value="1" selected>1 映射 INT1</option><option value="2">2 映射 INT2</option><option value="3">3 映射双 INT</option></select></div>
+          <div><span>QMA6100P 敲击检测</span><select id="qmaTapControl"><option value="0" selected>0 关闭</option><option value="1">1 单击</option><option value="2">2 单击+双击</option></select></div>
+          <div><span>QMA6100P 运动检测</span><select id="qmaMotionControl"><option value="0" selected>0 关闭</option><option value="1">1 任意运动</option><option value="2">2 静止/睡眠</option></select></div>
+          <div><span>QMA6100P 中断锁存</span><select id="qmaLatchControl"><option value="0">0 非锁存</option><option value="1" selected>1 锁存</option></select></div>
+          <div><span>ES8388 麦克风增益</span><select id="micGainControl"><option value="0">0 0dB</option><option value="2">2 6dB</option><option value="4">4 12dB</option><option value="6">6 18dB</option><option value="8" selected>8 24dB</option></select></div>
+          <div><span>ES8388 输入通道</span><select id="audioInputControl"><option value="0" selected>0 输入1</option><option value="1">1 输入2</option></select></div>
+          <div><span>ES8388 ALC</span><select id="alcPresetControl"><option value="0" selected>0 关闭</option><option value="1">1 语音稳定</option><option value="2">2 限幅保护</option></select></div>
+          <div><span>ES8388 3D 深度</span><select id="depth3dControl"><option value="0" selected>0 关闭</option><option value="2">2 轻微</option><option value="4">4 中等</option><option value="7">7 最强</option></select></div>
+          <div><span>ES8388 采样率</span><select id="sampleRateControl"><option value="8000">8000 低带宽</option><option value="16000" selected>16000 语音默认</option><option value="22050">22050 中等</option><option value="32000">32000 高带宽</option></select></div>
+          <div><span>ES8388 EQ</span><select id="eqPresetControl"><option value="0" selected>0 平直</option><option value="1">1 语音增强</option></select></div>
         </div>
         <div class="toolbar">
           <button id="apModeBtn" class="btn" type="button">设置 AP3216C</button>
+          <button id="apAdvancedBtn" class="btn" type="button">设置 AP 阈值/校准</button>
           <button id="qmaRangeBtn" class="btn" type="button">设置 QMA 量程</button>
+          <button id="qmaAdvancedBtn" class="btn" type="button">设置 QMA 功能</button>
           <button id="speakerVolumeBtn" class="btn" type="button">设置喇叭音量</button>
           <button id="headphoneVolumeBtn" class="btn" type="button">设置耳机音量</button>
           <button id="allVolumeBtn" class="btn" type="button">设置全部音量</button>
+          <button id="audioAdvancedBtn" class="btn" type="button">设置音频细项</button>
         </div>
         <div class="meta mono" id="peripheralState">外设预设就绪：写入后会读取寄存器确认</div>
         <table>
           <tbody>
             <tr><th>设备</th><th>可读地址 十进制</th><th>可写范围 十进制</th><th>怎么设</th></tr>
-            <tr><td>AP3216C 光照</td><td>0 到 255，常用 0 和 10 到 15</td><td>只读</td><td>地址 0 读系统模式；地址 10 到 15 读红外、环境光、接近数据。写入被禁止。</td></tr>
-            <tr><td>ES8388 音频</td><td>0 到 255</td><td>寄存器 46 到 49，写入值 0 到 33</td><td>46 左耳机音量，47 右耳机音量，48 左喇叭/输出音量，49 右喇叭/输出音量；掩码通常填 255。</td></tr>
-            <tr><td>QMA6100P 姿态</td><td>0 到 255，常用 0 到 6</td><td>只读</td><td>地址 0 读芯片标识；地址 1 到 6 读加速度原始数据。写入被禁止。</td></tr>
+            <tr><td>AP3216C 光照/接近</td><td>0 到 255，常用 0、1、2、10 到 15、25 到 29、40 到 45</td><td>只能通过下拉预设写</td><td>模式 0 到 7；ALS 阈值 0 到 65535；PS 阈值 0 到 1023；校准使用 0 到 255 的预设值。</td></tr>
+            <tr><td>ES8388 音频</td><td>0 到 255</td><td>寄存器 46 到 49，最终写入值 0 到 33</td><td>46/47 耳机音量，48/49 喇叭音量；麦克风增益 0 到 8，ALC/输入/采样率/EQ 用下拉预设。</td></tr>
+            <tr><td>QMA6100P 姿态</td><td>0 到 255，常用 0 到 24、31 到 47、54</td><td>只能通过下拉预设写</td><td>量程 2/4/8/16g；带宽 0 到 7；电源模式 0/128/132/135；中断、敲击、运动检测使用预设。</td></tr>
             <tr><td>XL9555 IO 扩展</td><td>0 到 7</td><td>只读</td><td>这里连接屏幕、摄像头复位和电源控制，避免误操作导致外设掉线，所以写入被禁止。</td></tr>
             <tr><td>OV5640 摄像头</td><td>0 到 65535</td><td>只读诊断</td><td>寄存器只用于诊断读取；亮度、曝光、增益、镜像请使用上面的摄像头设置。</td></tr>
           </tbody>
@@ -814,6 +858,25 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       headphoneVolumeBtn: document.getElementById('headphoneVolumeBtn'),
       allVolumeControl: document.getElementById('allVolumeControl'),
       allVolumeBtn: document.getElementById('allVolumeBtn'),
+      apAlsThresholdControl: document.getElementById('apAlsThresholdControl'),
+      apPsThresholdControl: document.getElementById('apPsThresholdControl'),
+      apCalibrationControl: document.getElementById('apCalibrationControl'),
+      apIntClearControl: document.getElementById('apIntClearControl'),
+      apAdvancedBtn: document.getElementById('apAdvancedBtn'),
+      qmaBandwidthControl: document.getElementById('qmaBandwidthControl'),
+      qmaPowerControl: document.getElementById('qmaPowerControl'),
+      qmaStepControl: document.getElementById('qmaStepControl'),
+      qmaTapControl: document.getElementById('qmaTapControl'),
+      qmaMotionControl: document.getElementById('qmaMotionControl'),
+      qmaLatchControl: document.getElementById('qmaLatchControl'),
+      qmaAdvancedBtn: document.getElementById('qmaAdvancedBtn'),
+      micGainControl: document.getElementById('micGainControl'),
+      audioInputControl: document.getElementById('audioInputControl'),
+      alcPresetControl: document.getElementById('alcPresetControl'),
+      depth3dControl: document.getElementById('depth3dControl'),
+      sampleRateControl: document.getElementById('sampleRateControl'),
+      eqPresetControl: document.getElementById('eqPresetControl'),
+      audioAdvancedBtn: document.getElementById('audioAdvancedBtn'),
       peripheralState: document.getElementById('peripheralState'),
       cpuMhzControl: document.getElementById('cpuMhzControl'),
       cpuMhzBtn: document.getElementById('cpuMhzBtn'),
@@ -1079,6 +1142,45 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     }
     bindCameraControlEditing();
 
+    const peripheralControlInputKeys = [
+      'apModeControl',
+      'qmaRangeControl',
+      'speakerVolumeControl',
+      'headphoneVolumeControl',
+      'allVolumeControl',
+      'apAlsThresholdControl',
+      'apPsThresholdControl',
+      'apCalibrationControl',
+      'apIntClearControl',
+      'qmaBandwidthControl',
+      'qmaPowerControl',
+      'qmaStepControl',
+      'qmaTapControl',
+      'qmaMotionControl',
+      'qmaLatchControl',
+      'micGainControl',
+      'audioInputControl',
+      'alcPresetControl',
+      'depth3dControl',
+      'sampleRateControl',
+      'eqPresetControl',
+    ];
+
+    function bindPeripheralControlEditing() {
+      peripheralControlInputKeys.forEach(key => {
+        const input = statusEls[key];
+        if (!input) return;
+        ['focus', 'pointerdown', 'mousedown', 'touchstart', 'keydown', 'input', 'change', 'pointerup', 'mouseup', 'touchend', 'blur'].forEach(eventName => {
+          input.addEventListener(eventName, () => markCameraControlEditing(input));
+        });
+      });
+    }
+
+    function clearAllPeripheralControlEditing() {
+      peripheralControlInputKeys.forEach(key => clearCameraControlEditing(statusEls[key]));
+    }
+    bindPeripheralControlEditing();
+
     const cameraControlLabels = {
       framesize_name: '分辨率',
       framesize: '分辨率',
@@ -1236,6 +1338,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
       statusEls.peripheralState.textContent = json.applied
         ? `已生效：${json.device}.${json.name}=${json.effective}`
         : `未生效：${device}.${name} ${json.error || res.status}`;
+      if (json.applied) clearAllPeripheralControlEditing();
       setTimeout(refreshLive, 300);
     }
     statusEls.apModeBtn.addEventListener('click', () => applyPeripheralControl('ap3216c', 'mode', statusEls.apModeControl.value).catch(error => {
@@ -1253,6 +1356,40 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     statusEls.allVolumeBtn.addEventListener('click', () => applyPeripheralControl('es8388', 'all_volume', statusEls.allVolumeControl.value).catch(error => {
       statusEls.peripheralState.textContent = error.message;
     }));
+    statusEls.apAdvancedBtn.addEventListener('click', async () => {
+      const calls = [
+        applyPeripheralControl('ap3216c', 'als_threshold', statusEls.apAlsThresholdControl.value),
+        applyPeripheralControl('ap3216c', 'ps_threshold', statusEls.apPsThresholdControl.value),
+        applyPeripheralControl('ap3216c', 'calibration', statusEls.apCalibrationControl.value),
+        applyPeripheralControl('ap3216c', 'int_clear', statusEls.apIntClearControl.value),
+      ];
+      await Promise.all(calls);
+      statusEls.peripheralState.textContent = '已生效：AP3216C 阈值/校准/中断策略';
+    });
+    statusEls.qmaAdvancedBtn.addEventListener('click', async () => {
+      const calls = [
+        applyPeripheralControl('qma6100p', 'bandwidth', statusEls.qmaBandwidthControl.value),
+        applyPeripheralControl('qma6100p', 'power_mode', statusEls.qmaPowerControl.value),
+        applyPeripheralControl('qma6100p', 'step_interrupt', statusEls.qmaStepControl.value),
+        applyPeripheralControl('qma6100p', 'tap_preset', statusEls.qmaTapControl.value),
+        applyPeripheralControl('qma6100p', 'motion_preset', statusEls.qmaMotionControl.value),
+        applyPeripheralControl('qma6100p', 'interrupt_latch', statusEls.qmaLatchControl.value),
+      ];
+      await Promise.all(calls);
+      statusEls.peripheralState.textContent = '已生效：QMA6100P 带宽/电源/中断/运动预设';
+    });
+    statusEls.audioAdvancedBtn.addEventListener('click', async () => {
+      const calls = [
+        applyPeripheralControl('es8388', 'mic_gain', statusEls.micGainControl.value),
+        applyPeripheralControl('es8388', 'input_channel', statusEls.audioInputControl.value),
+        applyPeripheralControl('es8388', 'alc_preset', statusEls.alcPresetControl.value),
+        applyPeripheralControl('es8388', '3d_depth', statusEls.depth3dControl.value),
+        applyPeripheralControl('es8388', 'sample_rate', statusEls.sampleRateControl.value),
+        applyPeripheralControl('es8388', 'eq_preset', statusEls.eqPresetControl.value),
+      ];
+      await Promise.all(calls);
+      statusEls.peripheralState.textContent = '已生效：ES8388 输入/增益/ALC/采样率/EQ';
+    });
     statusEls.cpuMhzBtn.addEventListener('click', async () => {
       const params = new URLSearchParams({ cpu_mhz: statusEls.cpuMhzControl.value });
       await fetch(`/api/system/control?${params.toString()}`, { method: 'POST', cache: 'no-store' });
@@ -1354,16 +1491,32 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         updateCameraControlFromStatus(statusEls.camVflip, status.camera.vflip ? '1' : '0');
         updateCameraControlFromStatus(statusEls.camColorbar, status.camera.colorbar ? '1' : '0');
       }
-      if (status.ap3216c && document.activeElement !== statusEls.apModeControl) {
-        statusEls.apModeControl.value = String(status.ap3216c.mode);
+      if (status.ap3216c) {
+        updateCameraControlFromStatus(statusEls.apModeControl, String(status.ap3216c.mode));
+        updateCameraControlFromStatus(statusEls.apAlsThresholdControl, String(status.ap3216c.als_threshold_preset));
+        updateCameraControlFromStatus(statusEls.apPsThresholdControl, String(status.ap3216c.ps_threshold_preset));
+        updateCameraControlFromStatus(statusEls.apCalibrationControl, String(status.ap3216c.calibration_preset));
+        updateCameraControlFromStatus(statusEls.apIntClearControl, String(status.ap3216c.int_clear_mode));
       }
-      if (status.qma6100p && document.activeElement !== statusEls.qmaRangeControl) {
-        statusEls.qmaRangeControl.value = String(status.qma6100p.range_g);
+      if (status.qma6100p) {
+        updateCameraControlFromStatus(statusEls.qmaRangeControl, String(status.qma6100p.range_g));
+        updateCameraControlFromStatus(statusEls.qmaBandwidthControl, String(status.qma6100p.bandwidth));
+        updateCameraControlFromStatus(statusEls.qmaPowerControl, String(status.qma6100p.power_mode));
+        updateCameraControlFromStatus(statusEls.qmaStepControl, String(status.qma6100p.step_interrupt));
+        updateCameraControlFromStatus(statusEls.qmaTapControl, String(status.qma6100p.tap_preset));
+        updateCameraControlFromStatus(statusEls.qmaMotionControl, String(status.qma6100p.motion_preset));
+        updateCameraControlFromStatus(statusEls.qmaLatchControl, status.qma6100p.interrupt_latch ? '1' : '0');
       }
       if (status.speaker) {
-        if (document.activeElement !== statusEls.speakerVolumeControl) statusEls.speakerVolumeControl.value = status.speaker.speaker_volume;
-        if (document.activeElement !== statusEls.headphoneVolumeControl) statusEls.headphoneVolumeControl.value = status.speaker.headphone_volume;
-        if (document.activeElement !== statusEls.allVolumeControl) statusEls.allVolumeControl.value = status.speaker.speaker_volume;
+        updateCameraControlFromStatus(statusEls.speakerVolumeControl, status.speaker.speaker_volume);
+        updateCameraControlFromStatus(statusEls.headphoneVolumeControl, status.speaker.headphone_volume);
+        updateCameraControlFromStatus(statusEls.allVolumeControl, status.speaker.speaker_volume);
+        updateCameraControlFromStatus(statusEls.micGainControl, String(status.speaker.mic_gain));
+        updateCameraControlFromStatus(statusEls.audioInputControl, String(status.speaker.input_channel));
+        updateCameraControlFromStatus(statusEls.alcPresetControl, String(status.speaker.alc_preset));
+        updateCameraControlFromStatus(statusEls.depth3dControl, String(status.speaker.depth_3d));
+        updateCameraControlFromStatus(statusEls.sampleRateControl, String(status.speaker.sample_rate_hz));
+        updateCameraControlFromStatus(statusEls.eqPresetControl, String(status.speaker.eq_preset));
       }
       if (status.config) {
         if (!configInputsDirty) {
@@ -3243,11 +3396,43 @@ String statusJson() {
   json += String(gLight.ps);
   json += ",\"mode\":";
   json += String(gAp3216Mode);
+  json += ",\"als_threshold_preset\":";
+  json += String(gApAlsThresholdPreset);
+  json += ",\"als_threshold_low\":";
+  json += String(gApAlsLowThreshold);
+  json += ",\"als_threshold_high\":";
+  json += String(gApAlsHighThreshold);
+  json += ",\"ps_threshold_preset\":";
+  json += String(gApPsThresholdPreset);
+  json += ",\"ps_threshold_low\":";
+  json += String(gApPsLowThreshold);
+  json += ",\"ps_threshold_high\":";
+  json += String(gApPsHighThreshold);
+  json += ",\"calibration_preset\":";
+  json += String(gApCalibrationPreset);
+  json += ",\"als_calibration\":";
+  json += String(gApAlsCalibration);
+  json += ",\"ps_calibration\":";
+  json += String(gApPsCalibration);
+  json += ",\"int_clear_mode\":";
+  json += String(gApIntClearMode);
   json += "},";
   json += "\"qma6100p\":{\"online\":";
   json += gAccel.online ? "true" : "false";
   json += ",\"range_g\":";
   json += String(qma6100p::currentRangeG());
+  json += ",\"bandwidth\":";
+  json += String(gQmaBandwidth);
+  json += ",\"power_mode\":";
+  json += String(gQmaPowerMode);
+  json += ",\"step_interrupt\":";
+  json += String(gQmaStepInterrupt);
+  json += ",\"tap_preset\":";
+  json += String(gQmaTapPreset);
+  json += ",\"motion_preset\":";
+  json += String(gQmaMotionPreset);
+  json += ",\"interrupt_latch\":";
+  json += gQmaInterruptLatch ? "true" : "false";
   json += ",\"ax\":";
   json += String(gAccel.ax, 3);
   json += ",\"ay\":";
@@ -3361,6 +3546,18 @@ String statusJson() {
   json += String(gSpeakerVolume);
   json += ",\"headphone_volume\":";
   json += String(gHeadphoneVolume);
+  json += ",\"mic_gain\":";
+  json += String(gEsMicGain);
+  json += ",\"input_channel\":";
+  json += String(gEsInputChannel);
+  json += ",\"alc_preset\":";
+  json += String(gEsAlcPreset);
+  json += ",\"depth_3d\":";
+  json += String(gEs3dDepth);
+  json += ",\"sample_rate_hz\":";
+  json += String(es8388codec::currentSampleRate());
+  json += ",\"eq_preset\":";
+  json += String(gEsEqPreset);
   json += ",\"last_test_ms\":";
   json += String(gSpeaker.lastTestMs);
   json += "}";
@@ -3542,10 +3739,42 @@ String liveJson() {
   json += String(gLight.ps);
   json += ",\"mode\":";
   json += String(gAp3216Mode);
+  json += ",\"als_threshold_preset\":";
+  json += String(gApAlsThresholdPreset);
+  json += ",\"als_threshold_low\":";
+  json += String(gApAlsLowThreshold);
+  json += ",\"als_threshold_high\":";
+  json += String(gApAlsHighThreshold);
+  json += ",\"ps_threshold_preset\":";
+  json += String(gApPsThresholdPreset);
+  json += ",\"ps_threshold_low\":";
+  json += String(gApPsLowThreshold);
+  json += ",\"ps_threshold_high\":";
+  json += String(gApPsHighThreshold);
+  json += ",\"calibration_preset\":";
+  json += String(gApCalibrationPreset);
+  json += ",\"als_calibration\":";
+  json += String(gApAlsCalibration);
+  json += ",\"ps_calibration\":";
+  json += String(gApPsCalibration);
+  json += ",\"int_clear_mode\":";
+  json += String(gApIntClearMode);
   json += "},\"qma6100p\":{\"online\":";
   json += gAccel.online ? "true" : "false";
   json += ",\"range_g\":";
   json += String(qma6100p::currentRangeG());
+  json += ",\"bandwidth\":";
+  json += String(gQmaBandwidth);
+  json += ",\"power_mode\":";
+  json += String(gQmaPowerMode);
+  json += ",\"step_interrupt\":";
+  json += String(gQmaStepInterrupt);
+  json += ",\"tap_preset\":";
+  json += String(gQmaTapPreset);
+  json += ",\"motion_preset\":";
+  json += String(gQmaMotionPreset);
+  json += ",\"interrupt_latch\":";
+  json += gQmaInterruptLatch ? "true" : "false";
   json += ",\"ax\":";
   json += String(gAccel.ax, 3);
   json += ",\"ay\":";
@@ -3623,6 +3852,18 @@ String liveJson() {
   json += String(gSpeakerVolume);
   json += ",\"headphone_volume\":";
   json += String(gHeadphoneVolume);
+  json += ",\"mic_gain\":";
+  json += String(gEsMicGain);
+  json += ",\"input_channel\":";
+  json += String(gEsInputChannel);
+  json += ",\"alc_preset\":";
+  json += String(gEsAlcPreset);
+  json += ",\"depth_3d\":";
+  json += String(gEs3dDepth);
+  json += ",\"sample_rate_hz\":";
+  json += String(es8388codec::currentSampleRate());
+  json += ",\"eq_preset\":";
+  json += String(gEsEqPreset);
   json += "},";
   appendCameraJson(json);
   json += ",";
@@ -4321,14 +4562,33 @@ bool registerWrite(RegisterDevice device, uint16_t reg, uint8_t mask, uint8_t va
   uint8_t current = 0;
   if (device == RegisterDevice::kEs8388) {
     if (!es8388codec::readRegister(static_cast<uint8_t>(reg), &current)) return false;
-    const bool ok = es8388codec::writeRegister(static_cast<uint8_t>(reg), static_cast<uint8_t>((current & ~mask) | (value & mask)));
-    if (ok && mask == 255) {
-      if (reg == 46 || reg == 47) gHeadphoneVolume = value;
-      if (reg == 48 || reg == 49) gSpeakerVolume = value;
+    const uint8_t finalValue = static_cast<uint8_t>((current & ~mask) | (value & mask));
+    if (finalValue > 33) {
+      return false;
+    }
+    const bool ok = es8388codec::writeRegister(static_cast<uint8_t>(reg), finalValue);
+    if (ok) {
+      if (reg == 46 || reg == 47) gHeadphoneVolume = finalValue;
+      if (reg == 48 || reg == 49) gSpeakerVolume = finalValue;
     }
     return ok;
   }
   return false;
+}
+
+uint8_t qmaRangeRegisterValue(uint8_t rangeG) {
+  switch (rangeG) {
+    case 2:
+      return 0x01;
+    case 4:
+      return 0x02;
+    case 8:
+      return 0x04;
+    case 16:
+      return 0x08;
+    default:
+      return 0xFF;
+  }
 }
 
 void sendPeripheralControlResult(bool ok,
@@ -4336,7 +4596,8 @@ void sendPeripheralControlResult(bool ok,
                                  const char *name,
                                  uint32_t requested,
                                  int effective,
-                                 const char *error = "") {
+                                 const char *error = "",
+                                 bool verifiedOverride = false) {
   String json;
   json.reserve(220);
   json += "{\"applied\":";
@@ -4350,7 +4611,7 @@ void sendPeripheralControlResult(bool ok,
   json += ",\"effective\":";
   json += String(effective);
   json += ",\"verified\":";
-  json += ok && static_cast<int>(requested) == effective ? "true" : "false";
+  json += (verifiedOverride || (ok && static_cast<int>(requested) == effective)) ? "true" : "false";
   if (!ok && error && error[0]) {
     json += ",\"error\":\"";
     json += error;
@@ -4373,17 +4634,17 @@ void handlePeripheralControl() {
   const String device = server.arg("device");
   const String name = server.arg("name");
   uint32_t requested = 0;
-  if (!parseDecimalUnsignedArg("value", 255, &requested)) {
+  if (!parseDecimalUnsignedArg("value", 65535, &requested)) {
     server.send(400, "application/json; charset=utf-8", "{\"applied\":false,\"error\":\"invalid_value\"}");
     return;
   }
 
   if (device == "ap3216c" && name == "mode") {
-    if (requested > 3) {
+    if (!((requested <= 3) || (requested >= 5 && requested <= 7))) {
       sendPeripheralControlResult(false, "ap3216c", "mode", requested, -1, "out_of_range");
       return;
     }
-    const bool writeOk = ap3216c::writeRegister(0, static_cast<uint8_t>(requested));
+    const bool writeOk = ap3216c::setMode(static_cast<uint8_t>(requested));
     delay(20);
     uint8_t effective = 255;
     const bool readOk = ap3216c::readRegister(0, &effective);
@@ -4394,6 +4655,110 @@ void handlePeripheralControl() {
     return;
   }
 
+  if (device == "ap3216c" && name == "als_threshold") {
+    uint16_t low = 0;
+    uint16_t high = 65535;
+    if (requested == 1) {
+      low = 50;
+      high = 1000;
+    } else if (requested == 2) {
+      low = 1000;
+      high = 5000;
+    } else if (requested != 0) {
+      sendPeripheralControlResult(false, "ap3216c", "als_threshold", requested, -1, "out_of_range");
+      return;
+    }
+    const bool writeOk = ap3216c::setAlsThreshold(low, high);
+    uint8_t lowL = 0, lowH = 0, highL = 0, highH = 0;
+    const bool readOk = ap3216c::readRegister(0x1A, &lowL) && ap3216c::readRegister(0x1B, &lowH) &&
+                        ap3216c::readRegister(0x1C, &highL) && ap3216c::readRegister(0x1D, &highH);
+    const uint16_t effectiveLow = static_cast<uint16_t>((lowH << 8) | lowL);
+    const uint16_t effectiveHigh = static_cast<uint16_t>((highH << 8) | highL);
+    const bool verified = writeOk && readOk && effectiveLow == low && effectiveHigh == high;
+    if (verified) {
+      gApAlsThresholdPreset = static_cast<uint8_t>(requested);
+      gApAlsLowThreshold = low;
+      gApAlsHighThreshold = high;
+    }
+    sendPeripheralControlResult(verified, "ap3216c", "als_threshold", requested, effectiveHigh, "write_failed", verified);
+    return;
+  }
+
+  if (device == "ap3216c" && name == "ps_threshold") {
+    uint16_t low = 0;
+    uint16_t high = 1023;
+    if (requested == 1) {
+      low = 80;
+      high = 500;
+    } else if (requested == 2) {
+      low = 500;
+      high = 900;
+    } else if (requested != 0) {
+      sendPeripheralControlResult(false, "ap3216c", "ps_threshold", requested, -1, "out_of_range");
+      return;
+    }
+    const bool writeOk = ap3216c::setPsThreshold(low, high);
+    uint8_t lowL = 0, lowH = 0, highL = 0, highH = 0;
+    const bool readOk = ap3216c::readRegister(0x2A, &lowL) && ap3216c::readRegister(0x2B, &lowH) &&
+                        ap3216c::readRegister(0x2C, &highL) && ap3216c::readRegister(0x2D, &highH);
+    const uint16_t effectiveLow = static_cast<uint16_t>((static_cast<uint16_t>(lowH) * 4U) + (lowL & 0x03));
+    const uint16_t effectiveHigh = static_cast<uint16_t>((static_cast<uint16_t>(highH) * 4U) + (highL & 0x03));
+    const bool verified = writeOk && readOk && effectiveLow == low && effectiveHigh == high;
+    if (verified) {
+      gApPsThresholdPreset = static_cast<uint8_t>(requested);
+      gApPsLowThreshold = low;
+      gApPsHighThreshold = high;
+    }
+    sendPeripheralControlResult(verified, "ap3216c", "ps_threshold", requested, effectiveHigh, "write_failed", verified);
+    return;
+  }
+
+  if (device == "ap3216c" && name == "calibration") {
+    uint8_t als = 64;
+    uint16_t ps = 0;
+    if (requested == 1) {
+      als = 80;
+      ps = 16;
+    } else if (requested == 2) {
+      als = 128;
+      ps = 64;
+    } else if (requested == 3) {
+      als = 192;
+      ps = 128;
+    } else if (requested != 0) {
+      sendPeripheralControlResult(false, "ap3216c", "calibration", requested, -1, "out_of_range");
+      return;
+    }
+    const bool writeOk = ap3216c::setAlsCalibration(als) && ap3216c::setPsCalibration(ps);
+    uint8_t alsRead = 0, psL = 0, psH = 0;
+    const bool readOk = ap3216c::readRegister(0x19, &alsRead) && ap3216c::readRegister(0x28, &psL) && ap3216c::readRegister(0x29, &psH);
+    const uint16_t psRead = static_cast<uint16_t>(((static_cast<uint16_t>(psH) << 1) | (psL & 0x01)) & 0x01FF);
+    const bool verified = writeOk && readOk && alsRead == als && psRead == ps;
+    if (verified) {
+      gApCalibrationPreset = static_cast<uint8_t>(requested);
+      gApAlsCalibration = als;
+      gApPsCalibration = ps;
+    }
+    sendPeripheralControlResult(verified, "ap3216c", "calibration", requested, alsRead, "write_failed", verified);
+    return;
+  }
+
+  if (device == "ap3216c" && name == "int_clear") {
+    if (requested > 1) {
+      sendPeripheralControlResult(false, "ap3216c", "int_clear", requested, -1, "out_of_range");
+      return;
+    }
+    const bool writeOk = ap3216c::setIntClearMode(static_cast<uint8_t>(requested));
+    uint8_t effective = 255;
+    const bool readOk = ap3216c::readRegister(0x02, &effective);
+    const bool verified = writeOk && readOk && effective == requested;
+    if (verified) {
+      gApIntClearMode = effective;
+    }
+    sendPeripheralControlResult(verified, "ap3216c", "int_clear", requested, effective, "write_failed");
+    return;
+  }
+
   if (device == "qma6100p" && name == "range_g") {
     if (!(requested == 2 || requested == 4 || requested == 8 || requested == 16)) {
       sendPeripheralControlResult(false, "qma6100p", "range_g", requested, -1, "out_of_range");
@@ -4401,8 +4766,98 @@ void handlePeripheralControl() {
     }
     const bool ok = qma6100p::setRangeG(static_cast<uint8_t>(requested));
     uint8_t reg = 0;
-    qma6100p::readRegister(15, &reg);
-    sendPeripheralControlResult(ok && qma6100p::currentRangeG() == requested, "qma6100p", "range_g", requested, qma6100p::currentRangeG(), "write_failed");
+    const bool readOk = qma6100p::readRegister(15, &reg);
+    const bool verified = ok && readOk && reg == qmaRangeRegisterValue(static_cast<uint8_t>(requested));
+    sendPeripheralControlResult(verified, "qma6100p", "range_g", requested, qma6100p::currentRangeG(), "write_failed");
+    return;
+  }
+
+  if (device == "qma6100p" && name == "bandwidth") {
+    if (requested > 7) {
+      sendPeripheralControlResult(false, "qma6100p", "bandwidth", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setBandwidth(static_cast<uint8_t>(requested));
+    uint8_t effective = 255;
+    const bool readOk = qma6100p::readRegister(0x10, &effective);
+    const bool verified = ok && readOk && effective == requested;
+    if (verified) gQmaBandwidth = effective;
+    sendPeripheralControlResult(verified, "qma6100p", "bandwidth", requested, effective, "write_failed");
+    return;
+  }
+
+  if (device == "qma6100p" && name == "power_mode") {
+    const bool allowed = requested == 0 || requested == 128 || requested == 132 || requested == 135;
+    if (!allowed) {
+      sendPeripheralControlResult(false, "qma6100p", "power_mode", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setPowerMode(static_cast<uint8_t>(requested));
+    uint8_t effective = 255;
+    const bool readOk = qma6100p::readRegister(0x11, &effective);
+    const bool verified = ok && readOk && effective == requested;
+    if (verified) gQmaPowerMode = effective;
+    sendPeripheralControlResult(verified, "qma6100p", "power_mode", requested, effective, "write_failed");
+    return;
+  }
+
+  if (device == "qma6100p" && name == "step_interrupt") {
+    if (requested > 3) {
+      sendPeripheralControlResult(false, "qma6100p", "step_interrupt", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setStepInterrupt(requested != 0, static_cast<uint8_t>(requested));
+    uint8_t reg16 = 0;
+    const bool readOk = qma6100p::readRegister(0x16, &reg16);
+    const bool verified = ok && readOk && (((reg16 & 0x08) != 0) == (requested != 0));
+    if (verified) gQmaStepInterrupt = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "qma6100p", "step_interrupt", requested, gQmaStepInterrupt, "write_failed");
+    return;
+  }
+
+  if (device == "qma6100p" && name == "tap_preset") {
+    if (requested > 2) {
+      sendPeripheralControlResult(false, "qma6100p", "tap_preset", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setTapPreset(static_cast<uint8_t>(requested));
+    uint8_t reg16 = 0;
+    const bool readOk = qma6100p::readRegister(0x16, &reg16);
+    const bool active = (reg16 & 0xB0) != 0;
+    const bool verified = ok && readOk && (requested == 0 ? !active : active);
+    if (verified) gQmaTapPreset = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "qma6100p", "tap_preset", requested, gQmaTapPreset, "write_failed", verified);
+    return;
+  }
+
+  if (device == "qma6100p" && name == "motion_preset") {
+    if (requested > 2) {
+      sendPeripheralControlResult(false, "qma6100p", "motion_preset", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setMotionPreset(static_cast<uint8_t>(requested));
+    uint8_t reg18 = 0;
+    const bool readOk = qma6100p::readRegister(0x18, &reg18);
+    const bool anyActive = (reg18 & 0xE0) != 0;
+    const bool noActive = (reg18 & 0x07) != 0;
+    const bool verified = ok && readOk && ((requested == 0 && !anyActive && !noActive) || (requested == 1 && anyActive) || (requested == 2 && noActive));
+    if (verified) gQmaMotionPreset = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "qma6100p", "motion_preset", requested, gQmaMotionPreset, "write_failed", verified);
+    return;
+  }
+
+  if (device == "qma6100p" && name == "interrupt_latch") {
+    if (requested > 1) {
+      sendPeripheralControlResult(false, "qma6100p", "interrupt_latch", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = qma6100p::setInterruptLatch(requested != 0);
+    uint8_t reg = 0;
+    const bool readOk = qma6100p::readRegister(0x21, &reg);
+    const bool effective = (reg & 0x01) != 0;
+    const bool verified = ok && readOk && effective == (requested != 0);
+    if (verified) gQmaInterruptLatch = effective;
+    sendPeripheralControlResult(verified, "qma6100p", "interrupt_latch", requested, effective ? 1 : 0, "write_failed");
     return;
   }
 
@@ -4445,6 +4900,85 @@ void handlePeripheralControl() {
       effective = (left == right) ? left : -1;
     }
     sendPeripheralControlResult(ok && effective == static_cast<int>(requested), "es8388", name.c_str(), requested, effective, "write_failed");
+    return;
+  }
+
+  if (device == "es8388" && name == "mic_gain") {
+    if (requested > 8) {
+      sendPeripheralControlResult(false, "es8388", "mic_gain", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = es8388codec::setMicGain(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    const bool readOk = es8388codec::readRegister(0x09, &reg);
+    const uint8_t expected = static_cast<uint8_t>((requested & 0x0F) | ((requested & 0x0F) << 4));
+    const bool verified = ok && readOk && reg == expected;
+    if (verified) gEsMicGain = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "es8388", "mic_gain", requested, gEsMicGain, "write_failed");
+    return;
+  }
+
+  if (device == "es8388" && name == "input_channel") {
+    if (requested > 1) {
+      sendPeripheralControlResult(false, "es8388", "input_channel", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = es8388codec::setInputChannel(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    const bool readOk = es8388codec::readRegister(0x0A, &reg);
+    const uint8_t expected = static_cast<uint8_t>((5 * requested) << 4);
+    const bool verified = ok && readOk && reg == expected;
+    if (verified) gEsInputChannel = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "es8388", "input_channel", requested, gEsInputChannel, "write_failed");
+    return;
+  }
+
+  if (device == "es8388" && name == "alc_preset") {
+    if (requested > 2) {
+      sendPeripheralControlResult(false, "es8388", "alc_preset", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = es8388codec::setAlcPreset(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    const bool readOk = es8388codec::readRegister(0x12, &reg);
+    const bool verified = ok && readOk && ((requested == 0 && ((reg >> 6) & 0x03) == 0) || (requested != 0 && ((reg >> 6) & 0x03) == 3));
+    if (verified) gEsAlcPreset = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "es8388", "alc_preset", requested, gEsAlcPreset, "write_failed", verified);
+    return;
+  }
+
+  if (device == "es8388" && name == "3d_depth") {
+    if (requested > 7) {
+      sendPeripheralControlResult(false, "es8388", "3d_depth", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = es8388codec::set3dDepth(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    const bool readOk = es8388codec::readRegister(0x1D, &reg);
+    const bool verified = ok && readOk && ((reg >> 2) & 0x07) == requested;
+    if (verified) gEs3dDepth = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "es8388", "3d_depth", requested, gEs3dDepth, "write_failed");
+    return;
+  }
+
+  if (device == "es8388" && name == "sample_rate") {
+    const bool ok = es8388codec::setAdcDacSampleRate(requested);
+    const bool verified = ok && es8388codec::currentSampleRate() == requested;
+    sendPeripheralControlResult(verified, "es8388", "sample_rate", requested, es8388codec::currentSampleRate(), "out_of_range");
+    return;
+  }
+
+  if (device == "es8388" && name == "eq_preset") {
+    if (requested > 1) {
+      sendPeripheralControlResult(false, "es8388", "eq_preset", requested, -1, "out_of_range");
+      return;
+    }
+    const bool ok = es8388codec::setEqPreset(static_cast<uint8_t>(requested));
+    uint8_t reg = 0;
+    const bool readOk = es8388codec::readRegister(0x1E, &reg);
+    const bool verified = ok && readOk;
+    if (verified) gEsEqPreset = static_cast<uint8_t>(requested);
+    sendPeripheralControlResult(verified, "es8388", "eq_preset", requested, gEsEqPreset, "write_failed", verified);
     return;
   }
 

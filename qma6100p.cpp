@@ -70,6 +70,121 @@ uint8_t currentRangeG() {
   return gRangeG;
 }
 
+bool setBandwidth(uint8_t bandwidth) {
+  if (bandwidth > 7) {
+    return false;
+  }
+  return writeReg(0x10, bandwidth);
+}
+
+bool setPowerMode(uint8_t value) {
+  switch (value) {
+    case 0x00:
+    case 0x80:
+    case 0x83:
+    case 0x84:
+    case 0x85:
+    case 0x86:
+    case 0x87:
+      return writeReg(0x11, value);
+    default:
+      return false;
+  }
+}
+
+bool setInterruptLatch(bool enabled) {
+  uint8_t reg = 0;
+  if (!readReg(0x21, &reg, 1)) {
+    return false;
+  }
+  reg = enabled ? static_cast<uint8_t>(reg | 0x01) : static_cast<uint8_t>(reg & ~0x01);
+  return writeReg(0x21, reg);
+}
+
+bool setStepInterrupt(bool enabled, uint8_t map) {
+  uint8_t reg16 = 0;
+  uint8_t reg19 = 0;
+  uint8_t reg1b = 0;
+  if (!readReg(0x16, &reg16, 1) || !readReg(0x19, &reg19, 1) || !readReg(0x1B, &reg1b, 1)) {
+    return false;
+  }
+  if (enabled) {
+    reg16 |= 0x08;
+    if (map == 1) {
+      reg19 |= 0x08;
+      reg1b &= static_cast<uint8_t>(~0x08);
+    } else if (map == 2) {
+      reg1b |= 0x08;
+      reg19 &= static_cast<uint8_t>(~0x08);
+    } else if (map == 3) {
+      reg19 |= 0x08;
+      reg1b |= 0x08;
+    } else {
+      return false;
+    }
+  } else {
+    reg16 &= static_cast<uint8_t>(~0x08);
+    reg19 &= static_cast<uint8_t>(~0x08);
+    reg1b &= static_cast<uint8_t>(~0x08);
+  }
+  return writeReg(0x16, reg16) && writeReg(0x19, reg19) && writeReg(0x1B, reg1b);
+}
+
+bool setTapPreset(uint8_t preset) {
+  uint8_t reg16 = 0;
+  uint8_t reg19 = 0;
+  uint8_t reg2a = 0;
+  uint8_t reg2b = 0;
+  if (!readReg(0x16, &reg16, 1) || !readReg(0x19, &reg19, 1)) {
+    return false;
+  }
+  reg16 &= static_cast<uint8_t>(~0xB1);
+  reg19 &= static_cast<uint8_t>(~0xB1);
+  switch (preset) {
+    case 0:
+      return writeReg(0x16, reg16) && writeReg(0x19, reg19);
+    case 1:
+      reg16 |= 0x80;
+      reg19 |= 0x80;
+      reg2a = 0x12;
+      reg2b = 0x98;
+      break;
+    case 2:
+      reg16 |= 0xA0;
+      reg19 |= 0xA0;
+      reg2a = 0x18;
+      reg2b = 0x98;
+      break;
+    default:
+      return false;
+  }
+  return writeReg(0x2A, reg2a) && writeReg(0x2B, reg2b) && writeReg(0x16, reg16) && writeReg(0x19, reg19);
+}
+
+bool setMotionPreset(uint8_t preset) {
+  uint8_t reg18 = 0;
+  uint8_t reg1b = 0;
+  if (!readReg(0x18, &reg18, 1) || !readReg(0x1B, &reg1b, 1)) {
+    return false;
+  }
+  switch (preset) {
+    case 0:
+      reg18 &= static_cast<uint8_t>(~0xE7);
+      reg1b &= static_cast<uint8_t>(~0xE0);
+      return writeReg(0x18, reg18) && writeReg(0x1B, reg1b);
+    case 1:
+      reg18 = static_cast<uint8_t>((reg18 & ~0xE7) | 0xE0);
+      reg1b |= 0xE0;
+      return writeReg(0x2C, 0x03) && writeReg(0x2E, 0x10) && writeReg(0x18, reg18) && writeReg(0x1B, reg1b);
+    case 2:
+      reg18 = static_cast<uint8_t>((reg18 & ~0xE7) | 0x07);
+      reg1b &= static_cast<uint8_t>(~0xE0);
+      return writeReg(0x2C, 0x05) && writeReg(0x2D, 0x08) && writeReg(0x18, reg18) && writeReg(0x1B, reg1b);
+    default:
+      return false;
+  }
+}
+
 bool begin() {
   uint8_t id = 0;
   if (!readReg(0x00, &id, 1)) {

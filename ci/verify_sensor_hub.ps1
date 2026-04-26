@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$CliPath = 'C:\Program Files\Arduino CLI\arduino-cli.exe',
     [string]$SketchPath = 'C:\Users\lyl\Desktop\ESP32\esp32_sensor_hub',
     [string]$Port = '',
@@ -676,9 +676,20 @@ function Test-CameraEndpoint {
     $streamPath = Join-Path $env:TEMP ('esp32_camera_stream_' + [guid]::NewGuid().ToString('N') + '.mjpg')
     try {
         $streamWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        & curl.exe --noproxy '*' --connect-timeout 8 --max-time 3 -sS -o $streamPath ('http://' + $Ip + ':81/stream.mjpg') 2>$null | Out-Null
+        $previousErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & curl.exe --noproxy '*' --connect-timeout 8 --max-time 3 -sS -o $streamPath ('http://' + $Ip + ':81/stream.mjpg') 2>$null | Out-Null
+            $streamCurlExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
         $streamWatch.Stop()
         $streamBytes = if (Test-Path $streamPath) { (Get-Item $streamPath).Length } else { 0 }
+        if (($streamCurlExit -ne 0) -and ($streamCurlExit -ne 28 -or $streamBytes -le 4096)) {
+            throw ('stream curl failed exit={0} bytes={1}' -f $streamCurlExit, $streamBytes)
+        }
         $streamText = if (Test-Path $streamPath) { [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($streamPath)) } else { '' }
         $streamFrames = [regex]::Matches($streamText, '--frame').Count
         $streamSeconds = [math]::Max(0.1, $streamWatch.Elapsed.TotalSeconds)
@@ -762,6 +773,9 @@ function Test-CameraEndpoint {
     $es8388BeforeJson = $es8388BeforeText | ConvertFrom-Json
     $es8388WriteText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255&value=18') -TimeoutSeconds 6
     $es8388WriteJson = $es8388WriteText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255&value=30') -TimeoutSeconds 6 | Out-Null
+    $es8388MaskedUnsafeText = Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=224&value=32') -TimeoutSeconds 6
+    $es8388MaskedUnsafeJson = $es8388MaskedUnsafeText | ConvertFrom-Json
     if ($es8388BeforeJson.ok -eq $true) {
         Invoke-CurlPost ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255&value=' + [int]$es8388BeforeJson.value) -TimeoutSeconds 6 | Out-Null
     }
@@ -825,6 +839,8 @@ function Test-CameraEndpoint {
         ($hexRegJson.error -eq 'invalid_request') -and
         ($es8388WriteJson.ok -eq $true) -and
         ([int]$es8388WriteJson.value -eq 18) -and
+        ($es8388MaskedUnsafeJson.ok -eq $false) -and
+        ($es8388MaskedUnsafeJson.error -eq 'write_failed') -and
         ($unsafeWriteJson.ok -eq $false) -and
         ($unsafeWriteJson.error -eq 'write_blocked') -and
         ($badFrameJson.applied -eq $false) -and
@@ -839,7 +855,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} active_control_ms={10} active_control_success={11} post_active_jpg={12} capture_before={13} capture_after={14} failures_before={15} failures_after={16} consecutive_failures={17} recovery_count={18} preset={19}/{20} preset_success={21} reg_value={22} quality={23} quality_success={24} quality_verified={25} brightness_success={26} brightness_verified={27} select_control_failures={28} invalid_quality={29} hex_camera={30} hex_reg={31} es8388_volume={32} unsafe_write={33} bad_frame={34} bad_value={35} bad_device={36} wrapped_reg={37}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $activeControlWatch.ElapsedMilliseconds, $activeControlJson.success, $postActiveJpgLength, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $consecutiveFailures, $recoveryCount, $presetJson.verified_count, $presetJson.control_count, $presetJson.success, $regJson.value, $quality, $controlJson.success, $controlJson.verified, $brightnessJson.success, $brightnessJson.verified, $(if ($cameraSelectFailures.Count) { $cameraSelectFailures -join '; ' } else { '(none)' }), $invalidQualityJson.error, $hexCameraJson.error, $hexRegJson.error, $es8388WriteJson.value, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} active_control_ms={10} active_control_success={11} post_active_jpg={12} capture_before={13} capture_after={14} failures_before={15} failures_after={16} consecutive_failures={17} recovery_count={18} preset={19}/{20} preset_success={21} reg_value={22} quality={23} quality_success={24} quality_verified={25} brightness_success={26} brightness_verified={27} select_control_failures={28} invalid_quality={29} hex_camera={30} hex_reg={31} es8388_volume={32} es8388_masked_unsafe={33} unsafe_write={34} bad_frame={35} bad_value={36} bad_device={37} wrapped_reg={38}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $activeControlWatch.ElapsedMilliseconds, $activeControlJson.success, $postActiveJpgLength, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $consecutiveFailures, $recoveryCount, $presetJson.verified_count, $presetJson.control_count, $presetJson.success, $regJson.value, $quality, $controlJson.success, $controlJson.verified, $brightnessJson.success, $brightnessJson.verified, $(if ($cameraSelectFailures.Count) { $cameraSelectFailures -join '; ' } else { '(none)' }), $invalidQualityJson.error, $hexCameraJson.error, $hexRegJson.error, $es8388WriteJson.value, $es8388MaskedUnsafeJson.error, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -848,18 +864,59 @@ function Test-PeripheralControls {
 
     $apModeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=1') -TimeoutSeconds 6
     $apModeJson = $apModeText | ConvertFrom-Json
+    $apAlsText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=als_threshold&value=1') -TimeoutSeconds 6
+    $apAlsJson = $apAlsText | ConvertFrom-Json
+    $apPsText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=ps_threshold&value=1') -TimeoutSeconds 6
+    $apPsJson = $apPsText | ConvertFrom-Json
+    $apCalText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=calibration&value=1') -TimeoutSeconds 6
+    $apCalJson = $apCalText | ConvertFrom-Json
+    $apIntText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=int_clear&value=1') -TimeoutSeconds 6
+    $apIntJson = $apIntText | ConvertFrom-Json
     $apRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=3') -TimeoutSeconds 6
     $apRestoreJson = $apRestoreText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=als_threshold&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=ps_threshold&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=calibration&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=int_clear&value=0') -TimeoutSeconds 6 | Out-Null
     $qmaRangeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=4') -TimeoutSeconds 6
     $qmaRangeJson = $qmaRangeText | ConvertFrom-Json
+    $qmaBandwidthText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=bandwidth&value=5') -TimeoutSeconds 6
+    $qmaBandwidthJson = $qmaBandwidthText | ConvertFrom-Json
+    $qmaPowerText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=power_mode&value=132') -TimeoutSeconds 6
+    $qmaPowerJson = $qmaPowerText | ConvertFrom-Json
+    $qmaStepText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=step_interrupt&value=3') -TimeoutSeconds 6
+    $qmaStepJson = $qmaStepText | ConvertFrom-Json
+    $qmaTapText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=tap_preset&value=1') -TimeoutSeconds 6
+    $qmaTapJson = $qmaTapText | ConvertFrom-Json
+    $qmaMotionText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=motion_preset&value=1') -TimeoutSeconds 6
+    $qmaMotionJson = $qmaMotionText | ConvertFrom-Json
+    $qmaLatchText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=interrupt_latch&value=0') -TimeoutSeconds 6
+    $qmaLatchJson = $qmaLatchText | ConvertFrom-Json
     $qmaRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=8') -TimeoutSeconds 6
     $qmaRestoreJson = $qmaRestoreText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=bandwidth&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=step_interrupt&value=1') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=tap_preset&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=motion_preset&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=interrupt_latch&value=1') -TimeoutSeconds 6 | Out-Null
     $speakerText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=speaker_volume&value=16') -TimeoutSeconds 6
     $speakerJson = $speakerText | ConvertFrom-Json
     $headphoneText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=headphone_volume&value=17') -TimeoutSeconds 6
     $headphoneJson = $headphoneText | ConvertFrom-Json
     $allVolumeText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=all_volume&value=22') -TimeoutSeconds 6
     $allVolumeJson = $allVolumeText | ConvertFrom-Json
+    $micGainText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=mic_gain&value=6') -TimeoutSeconds 6
+    $micGainJson = $micGainText | ConvertFrom-Json
+    $inputText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=input_channel&value=0') -TimeoutSeconds 6
+    $inputJson = $inputText | ConvertFrom-Json
+    $alcText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=alc_preset&value=1') -TimeoutSeconds 6
+    $alcJson = $alcText | ConvertFrom-Json
+    $depthText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=3d_depth&value=2') -TimeoutSeconds 6
+    $depthJson = $depthText | ConvertFrom-Json
+    $sampleRateText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=sample_rate&value=16000') -TimeoutSeconds 6
+    $sampleRateJson = $sampleRateText | ConvertFrom-Json
+    $eqText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=eq_preset&value=1') -TimeoutSeconds 6
+    $eqJson = $eqText | ConvertFrom-Json
     Invoke-CurlPost ('http://' + $Ip + '/api/speaker_test') -TimeoutSeconds 6 | Out-Null
     Start-Sleep -Seconds 3
     $speakerAfterPlaybackText = Invoke-Curl ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255') -TimeoutSeconds 6
@@ -868,6 +925,10 @@ function Test-PeripheralControls {
     $speakerRestoreJson = $speakerRestoreText | ConvertFrom-Json
     $headphoneRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=headphone_volume&value=18') -TimeoutSeconds 6
     $headphoneRestoreJson = $headphoneRestoreText | ConvertFrom-Json
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=mic_gain&value=8') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=alc_preset&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=3d_depth&value=0') -TimeoutSeconds 6 | Out-Null
+    Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=es8388&name=eq_preset&value=0') -TimeoutSeconds 6 | Out-Null
     $badApText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=ap3216c&name=mode&value=9') -TimeoutSeconds 6
     $badApJson = $badApText | ConvertFrom-Json
     $badQmaText = Invoke-CurlPost ('http://' + $Ip + '/api/peripheral/control?device=qma6100p&name=range_g&value=3') -TimeoutSeconds 6
@@ -881,10 +942,22 @@ function Test-PeripheralControls {
     $ok = ($apModeJson.applied -eq $true) -and
         ($apModeJson.verified -eq $true) -and
         ([int]$apModeJson.effective -eq 1) -and
+        ($apAlsJson.applied -eq $true) -and
+        ($apPsJson.applied -eq $true) -and
+        ($apCalJson.applied -eq $true) -and
+        ($apIntJson.applied -eq $true) -and
         ($apRestoreJson.applied -eq $true) -and
         ([int]$apRestoreJson.effective -eq 3) -and
         ($qmaRangeJson.applied -eq $true) -and
         ([int]$qmaRangeJson.effective -eq 4) -and
+        ($qmaBandwidthJson.applied -eq $true) -and
+        ([int]$qmaBandwidthJson.effective -eq 5) -and
+        ($qmaPowerJson.applied -eq $true) -and
+        ([int]$qmaPowerJson.effective -eq 132) -and
+        ($qmaStepJson.applied -eq $true) -and
+        ($qmaTapJson.applied -eq $true) -and
+        ($qmaMotionJson.applied -eq $true) -and
+        ($qmaLatchJson.applied -eq $true) -and
         ($qmaRestoreJson.applied -eq $true) -and
         ([int]$qmaRestoreJson.effective -eq 8) -and
         ($speakerJson.applied -eq $true) -and
@@ -893,6 +966,15 @@ function Test-PeripheralControls {
         ([int]$headphoneJson.effective -eq 17) -and
         ($allVolumeJson.applied -eq $true) -and
         ([int]$allVolumeJson.effective -eq 22) -and
+        ($micGainJson.applied -eq $true) -and
+        ([int]$micGainJson.effective -eq 6) -and
+        ($inputJson.applied -eq $true) -and
+        ($alcJson.applied -eq $true) -and
+        ($depthJson.applied -eq $true) -and
+        ([int]$depthJson.effective -eq 2) -and
+        ($sampleRateJson.applied -eq $true) -and
+        ([int]$sampleRateJson.effective -eq 16000) -and
+        ($eqJson.applied -eq $true) -and
         ($speakerAfterPlaybackJson.ok -eq $true) -and
         ([int]$speakerAfterPlaybackJson.value -eq 22) -and
         ($speakerRestoreJson.applied -eq $true) -and
@@ -905,12 +987,14 @@ function Test-PeripheralControls {
         ($badVolumeJson.error -eq 'out_of_range') -and
         ([int]$statusJson.ap3216c.mode -eq 3) -and
         ([int]$statusJson.qma6100p.range_g -eq 8) -and
+        ([int]$statusJson.qma6100p.bandwidth -eq 0) -and
         ([int]$statusJson.speaker.speaker_volume -eq 26) -and
-        ([int]$statusJson.speaker.headphone_volume -eq 18)
+        ([int]$statusJson.speaker.headphone_volume -eq 18) -and
+        ([int]$statusJson.speaker.mic_gain -eq 8)
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('ap_mode={0}->{1} qma_range={2}->{3} speaker={4}->all{5}->playback_reg{6}->{7} headphone={8}->{9} bad_ap={10} bad_qma={11} bad_volume={12} live_ap={13} live_qma={14} live_spk={15} live_hp={16}' -f $apModeJson.effective, $apRestoreJson.effective, $qmaRangeJson.effective, $qmaRestoreJson.effective, $speakerJson.effective, $allVolumeJson.effective, $speakerAfterPlaybackJson.value, $speakerRestoreJson.effective, $headphoneJson.effective, $headphoneRestoreJson.effective, $badApJson.error, $badQmaJson.error, $badVolumeJson.error, $statusJson.ap3216c.mode, $statusJson.qma6100p.range_g, $statusJson.speaker.speaker_volume, $statusJson.speaker.headphone_volume)
+        Details = ('ap_mode={0}->{1} ap_adv={2}/{3}/{4}/{5} qma_range={6}->{7} qma_adv_bw={8} qma_power={9} qma_step={10} qma_tap={11} qma_motion={12} qma_latch={13} speaker={14}->all{15}->playback_reg{16}->{17} headphone={18}->{19} audio_adv_gain={20} input={21} alc={22} depth={23} rate={24} eq={25} bad_ap={26} bad_qma={27} bad_volume={28} live_ap={29} live_qma={30} live_bw={31} live_spk={32} live_hp={33} live_gain={34}' -f $apModeJson.effective, $apRestoreJson.effective, $apAlsJson.applied, $apPsJson.applied, $apCalJson.applied, $apIntJson.applied, $qmaRangeJson.effective, $qmaRestoreJson.effective, $qmaBandwidthJson.effective, $qmaPowerJson.effective, $qmaStepJson.applied, $qmaTapJson.applied, $qmaMotionJson.applied, $qmaLatchJson.applied, $speakerJson.effective, $allVolumeJson.effective, $speakerAfterPlaybackJson.value, $speakerRestoreJson.effective, $headphoneJson.effective, $headphoneRestoreJson.effective, $micGainJson.effective, $inputJson.effective, $alcJson.effective, $depthJson.effective, $sampleRateJson.effective, $eqJson.effective, $badApJson.error, $badQmaJson.error, $badVolumeJson.error, $statusJson.ap3216c.mode, $statusJson.qma6100p.range_g, $statusJson.qma6100p.bandwidth, $statusJson.speaker.speaker_volume, $statusJson.speaker.headphone_volume, $statusJson.speaker.mic_gain)
     }
 }
 
@@ -1108,6 +1192,22 @@ function Test-DashboardSelectControls {
         'speakerVolumeControl',
         'headphoneVolumeControl',
         'allVolumeControl',
+        'apAlsThresholdControl',
+        'apPsThresholdControl',
+        'apCalibrationControl',
+        'apIntClearControl',
+        'qmaBandwidthControl',
+        'qmaPowerControl',
+        'qmaStepControl',
+        'qmaTapControl',
+        'qmaMotionControl',
+        'qmaLatchControl',
+        'micGainControl',
+        'audioInputControl',
+        'alcPresetControl',
+        'depth3dControl',
+        'sampleRateControl',
+        'eqPresetControl',
         'regPreset'
     )
     $missingSelects = @()
@@ -1124,7 +1224,10 @@ function Test-DashboardSelectControls {
         'id="camAecValue" type="range"',
         'id="camAgcGain" type="range"',
         'id="speakerVolumeControl" type="number"',
-        'id="headphoneVolumeControl" type="number"'
+        'id="headphoneVolumeControl" type="number"',
+        'id="micGainControl" type="number"',
+        'id="qmaBandwidthControl" type="number"',
+        'id="apAlsThresholdControl" type="number"'
     )
     $forbiddenHits = @($forbiddenControls | Where-Object { $HtmlText.Contains($_) })
     return [pscustomobject]@{
@@ -1494,7 +1597,7 @@ function Invoke-ArduinoCompile {
 
 $extraFlags = $null
 if ($WifiSsid) {
-    $extraFlags = ('build.extra_flags=-DWIFI_STA_SSID="{0}" -DWIFI_STA_PASS="{1}"' -f $WifiSsid, $WifiPassword)
+    $extraFlags = ('build.extra_flags=-DWIFI_STA_SSID={0} -DWIFI_STA_PASS={1}' -f $WifiSsid, $WifiPassword)
 }
 
 $serialLog = ''
@@ -1667,12 +1770,17 @@ try {
         $htmlText.Contains('只接受十进制') -and
         $htmlText.Contains('ES8388 音频') -and
         $htmlText.Contains('寄存器 46 到 49') -and
-        $htmlText.Contains('写入值 0 到 33') -and
+        $htmlText.Contains('最终写入值 0 到 33') -and
         $htmlText.Contains('写入被禁止') -and
         $htmlText.Contains('XL9555 IO 扩展') -and
         $htmlText.Contains('AP3216C 工作模式') -and
+        $htmlText.Contains('AP3216C ALS 阈值') -and
+        $htmlText.Contains('AP3216C 接近阈值') -and
         $htmlText.Contains('QMA6100P 量程') -and
+        $htmlText.Contains('QMA6100P 带宽/ODR') -and
         $htmlText.Contains('ES8388 喇叭音量') -and
+        $htmlText.Contains('ES8388 麦克风增益') -and
+        $htmlText.Contains('ES8388 ALC') -and
         $htmlText.Contains('常用寄存器') -and
         $htmlText.Contains('camSpecialEffect') -and
         $htmlText.Contains('camWbMode') -and
@@ -1680,6 +1788,7 @@ try {
         $htmlText.Contains('data-camera-preset') -and
         $htmlText.Contains('cameraControlInputKeys') -and
         $htmlText.Contains('bindCameraControlEditing') -and
+        $htmlText.Contains('bindPeripheralControlEditing') -and
         $htmlText.Contains('dataset.userEditing') -and
         $htmlText.Contains('updateCameraControlFromStatus') -and
         $htmlText.Contains('已生效') -and
