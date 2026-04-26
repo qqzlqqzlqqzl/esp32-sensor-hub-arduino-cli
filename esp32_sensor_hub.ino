@@ -68,6 +68,8 @@ constexpr unsigned long kDashboardLiveIntervalMs = 500;
 constexpr unsigned long kLivePayloadCacheTtlMs = 1000;
 constexpr unsigned long kDashboardSnapshotIntervalMs = 10000;
 constexpr unsigned long kSerialReportIntervalMs = 10000;
+constexpr uint16_t kStatusLedMinHalfPeriodMs = 80;
+constexpr uint16_t kStatusLedMaxHalfPeriodMs = 1000;
 constexpr uint16_t kCameraStreamPort = 81;
 constexpr uint16_t kCameraStreamTargetFps = 20;
 constexpr uint32_t kCameraStreamFrameIntervalMs = 1000 / kCameraStreamTargetFps;
@@ -228,6 +230,13 @@ struct SystemState {
   uint8_t displayPage = 0;
   char displayPageName[20] = "BOOT";
 } gSystem;
+
+struct StatusLedState {
+  bool state = false;
+  uint16_t halfPeriodMs = 500;
+  float blinkHz = 1.0f;
+  unsigned long lastToggleMs = 0;
+} gStatusLed;
 
 struct SpeakerState {
   bool online = false;
@@ -1277,7 +1286,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         && typeof status.system.top_task_cpu_pct === 'number'
         && Number.isFinite(status.system.top_task_cpu_pct);
       statusEls.cpuState.textContent = status.system.runtime_ready
-        ? `RSSI ${status.network.rssi_dbm} dBm / top task ${topTaskAvailable ? 'available' : 'unavailable'}`
+        ? `RSSI ${status.network.rssi_dbm} dBm / LED ${fmtNum(status.system.status_led_blink_hz, 2)} Hz / ${status.system.status_led_half_period_ms} ms`
         : 'runtime stats pending';
       statusEls.cpuState.className = `meta ${status.system.runtime_ready ? 'ok' : 'bad'}`;
       statusEls.alsValue.textContent = status.ap3216c.online ? `ALS ${status.ap3216c.als}` : 'ALS --';
@@ -2115,6 +2124,27 @@ void updateSystemStatsIfDue() {
   gSystem.topTaskCpuPct = 0.0f;
   gSystem.topTaskName[0] = '\0';
   gSystem.runtimeReady = true;
+}
+
+uint16_t statusLedHalfPeriodForCpu(float cpuUsagePct, bool runtimeReady) {
+  if (!runtimeReady) {
+    return 500;
+  }
+  const float cpu = constrain(cpuUsagePct, 0.0f, 100.0f);
+  const float range = static_cast<float>(kStatusLedMaxHalfPeriodMs - kStatusLedMinHalfPeriodMs);
+  return static_cast<uint16_t>(kStatusLedMaxHalfPeriodMs - (range * cpu / 100.0f));
+}
+
+void updateStatusLed() {
+  gStatusLed.halfPeriodMs = statusLedHalfPeriodForCpu(gSystem.cpuUsagePct, gSystem.runtimeReady);
+  gStatusLed.blinkHz = 1000.0f / (2.0f * static_cast<float>(gStatusLed.halfPeriodMs));
+  const unsigned long now = millis();
+  if (now - gStatusLed.lastToggleMs < gStatusLed.halfPeriodMs) {
+    return;
+  }
+  gStatusLed.lastToggleMs = now;
+  gStatusLed.state = !gStatusLed.state;
+  digitalWrite(kStatusLedPin, gStatusLed.state ? HIGH : LOW);
 }
 
 void updateDisplayIfDue() {
@@ -3246,6 +3276,15 @@ String statusJson() {
   json += gSystem.runtimeReady ? "true" : "false";
   json += ",\"cpu_usage_pct\":";
   json += String(gSystem.cpuUsagePct, 2);
+  json += ",\"status_led_pin\":";
+  json += String(kStatusLedPin);
+  json += ",\"status_led_cpu_linked\":true";
+  json += ",\"status_led_half_period_ms\":";
+  json += String(gStatusLed.halfPeriodMs);
+  json += ",\"status_led_blink_hz\":";
+  json += String(gStatusLed.blinkHz, 2);
+  json += ",\"status_led_state\":";
+  json += gStatusLed.state ? "true" : "false";
   json += ",\"cpu_freq_mhz\":";
   json += String(gSystem.cpuFreqMhz);
   json += ",\"wifi_tx_power\":";
@@ -3533,6 +3572,15 @@ String liveJson() {
   json += gSystem.runtimeReady ? "true" : "false";
   json += ",\"cpu_usage_pct\":";
   json += String(gSystem.cpuUsagePct, 2);
+  json += ",\"status_led_pin\":";
+  json += String(kStatusLedPin);
+  json += ",\"status_led_cpu_linked\":true";
+  json += ",\"status_led_half_period_ms\":";
+  json += String(gStatusLed.halfPeriodMs);
+  json += ",\"status_led_blink_hz\":";
+  json += String(gStatusLed.blinkHz, 2);
+  json += ",\"status_led_state\":";
+  json += gStatusLed.state ? "true" : "false";
   json += ",\"cpu_freq_mhz\":";
   json += String(gSystem.cpuFreqMhz);
   json += ",\"wifi_tx_power\":";
@@ -4735,6 +4783,8 @@ void reportStatusIfDue() {
 void setup() {
   pinMode(kStatusLedPin, OUTPUT);
   digitalWrite(kStatusLedPin, LOW);
+  gStatusLed.state = false;
+  gStatusLed.lastToggleMs = millis();
 
   Serial.begin(115200);
   delay(100);
@@ -4762,6 +4812,7 @@ void setup() {
 
   setupServer();
   updateSystemStatsIfDue();
+  updateStatusLed();
   readChipTempIfDue();
   readAp3216IfDue();
   readQmaIfDue();
@@ -4783,6 +4834,7 @@ void loop() {
     ESP.restart();
   }
   updateSystemStatsIfDue();
+  updateStatusLed();
   readDhtIfDue();
   readChipTempIfDue();
   readAp3216IfDue();
@@ -4795,5 +4847,4 @@ void loop() {
   flushIfDue();
   updateDisplayIfDue();
   reportStatusIfDue();
-  digitalWrite(kStatusLedPin, (millis() / 500) % 2);
 }

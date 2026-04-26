@@ -145,6 +145,35 @@ function Test-PropertyPresent {
     return $null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name]
 }
 
+function Test-StatusLedCpuLink {
+    param([object]$System)
+
+    if (-not (Test-PropertyPresent -Object $System -Name 'status_led_half_period_ms') -or
+        -not (Test-PropertyPresent -Object $System -Name 'status_led_blink_hz') -or
+        -not (Test-PropertyPresent -Object $System -Name 'status_led_cpu_linked')) {
+        return $false
+    }
+    if ($System.status_led_cpu_linked -ne $true) {
+        return $false
+    }
+    $halfPeriod = [int]$System.status_led_half_period_ms
+    $blinkHz = [double]$System.status_led_blink_hz
+    if ($halfPeriod -lt 80 -or $halfPeriod -gt 1000 -or $blinkHz -le 0.0) {
+        return $false
+    }
+    if ($System.runtime_ready -ne $true) {
+        return $halfPeriod -eq 500
+    }
+    $cpu = [double]$System.cpu_usage_pct
+    if ($cpu -lt 0.0) { $cpu = 0.0 }
+    if ($cpu -gt 100.0) { $cpu = 100.0 }
+    $expectedHalf = [math]::Floor(1000.0 - ((1000.0 - 80.0) * $cpu / 100.0))
+    $halfOk = [math]::Abs($halfPeriod - $expectedHalf) -le 2
+    $expectedHz = 1000.0 / (2.0 * [double]$halfPeriod)
+    $hzOk = [math]::Abs($blinkHz - $expectedHz) -le 0.02
+    return $halfOk -and $hzOk
+}
+
 function Get-DashboardCandidates {
     param([string]$SerialLog)
 
@@ -588,6 +617,7 @@ function Test-LiveEndpoint {
         (Test-PropertyPresent -Object $liveJson.adc -Name 'millivolts') -and
         (Test-PropertyPresent -Object $liveJson.adc -Name 'voltage_v') -and
         ($liveJson.camera.online -eq $true) -and
+        (Test-StatusLedCpuLink -System $liveJson.system) -and
         ([int]$liveJson.system.free_heap_bytes -gt 0) -and
         ([int]$liveJson.storage.persisted_samples -ge 1)
 
@@ -1543,6 +1573,7 @@ try {
         ($null -ne $statusJson.alerts) -and
         ($statusJson.storage.write_failures -eq 0) -and
         ($statusJson.storage.dropped_samples -eq 0) -and
+        (Test-StatusLedCpuLink -System $statusJson.system) -and
         $statusJson.system.cpu_freq_mhz -ge 1 -and
         ($statusJson.storage.persisted_samples -ge 1)
     Add-Result 'API Status' $statusOk $statusText
@@ -1631,6 +1662,8 @@ try {
         $htmlText.Contains('adcVoltage') -and
         $htmlText.Contains('adcState') -and
         $htmlText.Contains('CPU 使用率') -and
+        $htmlText.Contains('status_led_blink_hz') -and
+        $htmlText.Contains('status_led_half_period_ms') -and
         $htmlText.Contains('只接受十进制') -and
         $htmlText.Contains('ES8388 音频') -and
         $htmlText.Contains('寄存器 46 到 49') -and
@@ -1708,6 +1741,7 @@ $reportLines += '- Camera JPEG capture, OPI PSRAM availability, active-stream ca
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified dropdown camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Normal camera and peripheral settings use dropdown selectors, with manual decimal register input retained only for diagnostics'
+$reportLines += '- Status LED blink rate is linked to CPU usage and exposed through /api/status and /api/live telemetry'
 $reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh, including ADC input voltage, and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'

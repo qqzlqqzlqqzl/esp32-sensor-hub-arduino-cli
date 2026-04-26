@@ -12,6 +12,7 @@ Feature: ESP32 Sensor Hub Dashboard
     Then DHT11 raw frame bytes, effective DHT resolution, AP3216C, QMA6100P, microphone, ADC input voltage, chip temperature, CPU, health, live cadence, alerts, config and board speaker verification fields should be present
     And /api/health should report compact OK health for storage, sensors, ADC input voltage, speaker, alerts, uptime, heap and persisted samples
     And /api/live should report 500 ms live polling, cached live payloads, ADC input voltage, and 10000 ms sample and flush cadence
+    And /api/status and /api/live should expose the CPU-linked status LED blink half-period and frequency
     And /api/status should report boot timing telemetry with bounded setup time and tail-loaded history rows
     And the MC5640 camera should report online status and serve a JPEG frame to the HTML dashboard
     And /api/status should report PSRAM available for camera frame buffers

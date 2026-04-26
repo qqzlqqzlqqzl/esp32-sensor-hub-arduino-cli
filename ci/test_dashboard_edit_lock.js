@@ -97,7 +97,7 @@ function statusWithCamera(camera) {
     dht11: { online: true, temp_c: 28, humidity: 7, sensor_type: 11, resolution_c: 1, resolution_humidity: 1, raw_temperature_integer: 28, raw_temperature_decimal: 0, raw_humidity_integer: 7, raw_humidity_decimal: 0, success_count: 1, failure_count: 0 },
     mic: { online: true, dbfs: -50, rms: 0.01, peak: 10 },
     adc: { online: true, pin: 8, raw: 1234, millivolts: 987, voltage_v: 0.987, scale: 1.0, success_count: 3, failure_count: 0 },
-    system: { runtime_ready: true, cpu_usage_pct: 12, free_heap_bytes: 100000, min_free_heap_bytes: 90000, max_alloc_heap_bytes: 80000, uptime_sec: 12, cpu_freq_mhz: 240, reset_reason: 'POWERON', top_task: null, top_task_cpu_pct: null },
+    system: { runtime_ready: true, cpu_usage_pct: 12, status_led_half_period_ms: 890, status_led_blink_hz: 0.56, status_led_cpu_linked: true, free_heap_bytes: 100000, min_free_heap_bytes: 90000, max_alloc_heap_bytes: 80000, uptime_sec: 12, cpu_freq_mhz: 240, reset_reason: 'POWERON', top_task: null, top_task_cpu_pct: null },
     ap3216c: { online: true, als: 20, ir: 10, ps: 5, mode: 3 },
     qma6100p: { online: true, range_g: 8, ax: 0, ay: 0, az: 9.8, ag: 9.8, pitch: 0, roll: 0 },
     chip_temp: { online: true, temp_c: 52 },

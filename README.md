@@ -13,6 +13,7 @@ Arduino CLI based ESP32-S3 sensor hub for the ALIENTEK DNESP32S3 board.
 - MC5640 / OV5640 board camera JPEG snapshots in the HTML dashboard
 - OPI PSRAM enabled for camera frame buffers
 - Hardware control panel for camera settings, selected ESP32 controls and safe device register access
+- CPU-linked status LED blink rate telemetry
 - LittleFS CSV persistence
 - Fast boot history recovery with boot timing telemetry
 - LittleFS-backed alert threshold configuration
@@ -69,6 +70,7 @@ The default verification path skips host USB camera checks and focuses on the bo
 - camera controls while MJPEG streaming is active, including stream pause and post-control capture recovery
 - dashboard edit-lock checks so 0.5s live polling does not overwrite camera controls while the user is editing
 - dropdown control checks for camera advanced settings, ES8388 volume presets and common safe register presets
+- CPU-linked status LED half-period and blink frequency checks in `/api/status` and `/api/live`
 - executable host-side dashboard JavaScript edit-lock behavior test through `ci/test_dashboard_edit_lock.js`
 - compact health endpoint checks through `/api/health`
 - cached lightweight live endpoint checks through `/api/live`
