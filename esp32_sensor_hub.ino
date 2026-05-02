@@ -67,7 +67,7 @@ constexpr unsigned long kSerialReportIntervalMs = 10000;
 constexpr uint16_t kStatusLedMinHalfPeriodMs = 80;
 constexpr uint16_t kStatusLedMaxHalfPeriodMs = 1000;
 constexpr uint16_t kCameraStreamPort = 81;
-constexpr uint16_t kCameraStreamTargetFps = 20;
+constexpr uint16_t kCameraStreamTargetFps = 24;
 constexpr uint32_t kCameraStreamFrameIntervalMs = 1000 / kCameraStreamTargetFps;
 constexpr size_t kHistoryCapacity = 120;
 constexpr char kLogPath[] = "/sensor_log.csv";
@@ -684,11 +684,11 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         <div class="control-row"><span>手动曝光值</span><select id="camAecValue"><option value="0">0 最短</option><option value="150">150 较短</option><option value="300" selected>300 默认</option><option value="600">600 较长</option><option value="885">885 当前常见回读</option><option value="900">900 长曝光</option><option value="1200">1200 最长</option></select><button class="btn" data-cam="aec_value" data-cam-input="camAecValue" type="button">设</button></div>
         <div class="control-row"><span>自动增益</span><select id="camAgc"><option value="1">开</option><option value="0">关</option></select><button class="btn" data-cam-select="agc" data-cam-input="camAgc" type="button">设</button></div>
         <div class="control-row"><span>手动增益值</span><select id="camAgcGain"><option value="0" selected>0 最低</option><option value="6">6 较低</option><option value="12">12 中等</option><option value="18">18 较高</option><option value="24">24 高</option><option value="30">30 最高</option></select><button class="btn" data-cam="agc_gain" data-cam-input="camAgcGain" type="button">设</button></div>
-        <div class="control-row"><span>增益上限</span><select id="camGainCeiling"><option value="0">0 2x</option><option value="1">1 4x</option><option value="2">2 8x</option><option value="3">3 16x</option><option value="4">4 32x</option><option value="5">5 64x</option><option value="6">6 128x</option></select><button class="btn" data-cam="gainceiling" data-cam-input="camGainCeiling" type="button">设</button></div>
+        <div class="control-row"><span>增益上限</span><select id="camGainCeiling"><option value="32">32 约 2.0x</option><option value="64">64 约 4.0x</option><option value="124">124 约 7.75x</option><option value="248" selected>248 约 15.5x</option><option value="512">512 约 32.0x</option><option value="1023">1023 约 63.9x</option></select><button class="btn" data-cam="gainceiling" data-cam-input="camGainCeiling" type="button">设</button></div>
         <div class="control-row"><span>镜像</span><select id="camMirror"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="hmirror" data-cam-input="camMirror" type="button">设</button></div>
         <div class="control-row"><span>翻转</span><select id="camVflip"><option value="0">off</option><option value="1">on</option></select><button class="btn" data-cam-select="vflip" data-cam-input="camVflip" type="button">设</button></div>
         <div class="control-row"><span>彩条测试</span><select id="camColorbar"><option value="0" selected>关</option><option value="1">开</option></select><button class="btn" data-cam-select="colorbar" data-cam-input="camColorbar" type="button">设</button></div>
-        <div class="meta">摄像头设置每次写入前会暂停视频流并回读 /api/camera；只有显示“已生效”才算设置成功。拖动滑条或修改下拉框时，0.5 秒后台刷新不会覆盖正在编辑的值，点“设”或一键预设后才按硬件回读值同步。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。</div>
+        <div class="meta">摄像头设置每次写入前会暂停视频流并回读 /api/camera；只有显示“已生效”才算设置成功。拖动滑条或修改下拉框时，0.5 秒后台刷新不会覆盖正在编辑的值，点“设”或一键预设后才按硬件回读值同步。自动曝光或自动增益打开时，手动曝光值和手动增益值可能会被传感器算法覆盖；需要稳定手动值时先把自动项设为 0。视频流目标 24 FPS，用来给实际 20 FPS 留余量。</div>
         <table>
           <tbody>
             <tr><th>设置项</th><th>十进制范围</th><th>说明</th></tr>
@@ -699,7 +699,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
             <tr><td>白平衡模式</td><td>0 到 4</td><td>0 自动，1 晴天，2 阴天，3 办公室，4 家庭。</td></tr>
             <tr><td>手动曝光值</td><td>0 到 1200</td><td>自动曝光为 0 时更稳定。</td></tr>
             <tr><td>手动增益值</td><td>0 到 30</td><td>自动增益为 0 时更稳定。</td></tr>
-            <tr><td>增益上限</td><td>0 到 6</td><td>0 约 2 倍，1 约 4 倍，2 约 8 倍，3 约 16 倍，4 约 32 倍，5 约 64 倍，6 约 128 倍。</td></tr>
+            <tr><td>增益上限</td><td>16 到 1023</td><td>OV5640 原始 10-bit 十进制值；常用 32、64、124、248、512、1023，约 2.0 到 63.9 倍。</td></tr>
           </tbody>
         </table>
       </section>
@@ -918,7 +918,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
     const LIVE_POLL_MS = 500;
     const SNAPSHOT_POLL_MS = 10000;
     const CAMERA_STREAM_PORT = 81;
-    const CAMERA_STREAM_TARGET_FPS = 20;
+    const CAMERA_STREAM_TARGET_FPS = 24;
     const CAMERA_STREAM_RETRY_MS = 1200;
 
     function fmtBool(online) { return online ? '在线' : '离线'; }
@@ -1505,7 +1505,7 @@ const char kDashboardHtml[] PROGMEM = R"HTML(
         updateCameraControlFromStatus(statusEls.camAecValue, status.camera.aec_value);
         updateCameraControlFromStatus(statusEls.camAgc, status.camera.agc ? '1' : '0');
         updateCameraControlFromStatus(statusEls.camAgcGain, status.camera.agc_gain);
-        if (Number(status.camera.gainceiling) >= 0 && Number(status.camera.gainceiling) <= 6) {
+        if (Number(status.camera.gainceiling) >= 16 && Number(status.camera.gainceiling) <= 1023) {
           updateCameraControlFromStatus(statusEls.camGainCeiling, status.camera.gainceiling);
         }
         updateCameraControlFromStatus(statusEls.camMirror, status.camera.hmirror ? '1' : '0');
@@ -4560,7 +4560,7 @@ bool cameraControlValueAllowed(const String &name, int value, const char **error
       {"aec_value", 0, 1200},
       {"agc", 0, 1},
       {"agc_gain", 0, 30},
-      {"gainceiling", 0, 6},
+      {"gainceiling", 16, 1023},
       {"hmirror", 0, 1},
       {"vflip", 0, 1},
       {"colorbar", 0, 1},

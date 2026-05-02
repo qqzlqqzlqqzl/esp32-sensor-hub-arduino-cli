@@ -44,8 +44,9 @@ Feature: ESP32 Sensor Hub Dashboard
     And camera controls should still complete and capture should recover while an MJPEG stream is connected
     And the camera status should expose capture recovery counters so stalled frame capture is visible
     And register controls should use Chinese decimal guidance and safe write ranges
+    And OV5640 gain ceiling should use decimal raw 10-bit register values and reject the old generic 0 to 6 enum values
     And unsafe register writes, non-decimal register numbers, invalid devices, wrapped 8-bit register addresses, out-of-range camera values, and invalid camera frame sizes should be rejected
-    And the camera dashboard should use a dedicated MJPEG stream with a measured 20 FPS target
+    And the camera dashboard should use a dedicated MJPEG stream with a 24 FPS scheduler target to keep measured throughput near or above 20 FPS
 
   Scenario: Dashboard controls remain editable while live polling runs
     Given the board HTTP service is online and the HTML dashboard polls /api/live every 500 ms

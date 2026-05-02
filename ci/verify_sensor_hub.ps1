@@ -740,6 +740,10 @@ function Test-CameraEndpoint {
     $controlJson = $controlText | ConvertFrom-Json
     $brightnessText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=brightness&value=1') -TimeoutSeconds 6
     $brightnessJson = $brightnessText | ConvertFrom-Json
+    $gainCeilingText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=gainceiling&value=124') -TimeoutSeconds 6
+    $gainCeilingJson = $gainCeilingText | ConvertFrom-Json
+    $gainCeilingRestoreText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=gainceiling&value=248') -TimeoutSeconds 6
+    $gainCeilingRestoreJson = $gainCeilingRestoreText | ConvertFrom-Json
     $cameraSelectControls = @(
         @{ Name = 'contrast'; Value = '0' },
         @{ Name = 'saturation'; Value = '0' },
@@ -767,6 +771,8 @@ function Test-CameraEndpoint {
     $invalidQualityJson = $invalidQualityText | ConvertFrom-Json
     $hexCameraText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=quality&value=0x12') -TimeoutSeconds 6
     $hexCameraJson = $hexCameraText | ConvertFrom-Json
+    $badGainCeilingText = Invoke-CurlPost ('http://' + $Ip + '/api/camera/control?name=gainceiling&value=6') -TimeoutSeconds 6
+    $badGainCeilingJson = $badGainCeilingText | ConvertFrom-Json
     $hexRegText = Invoke-Curl ('http://' + $Ip + '/api/register?device=ap3216c&reg=0x00&mask=255') -TimeoutSeconds 6
     $hexRegJson = $hexRegText | ConvertFrom-Json
     $es8388BeforeText = Invoke-Curl ('http://' + $Ip + '/api/register?device=es8388&reg=48&mask=255') -TimeoutSeconds 6
@@ -807,7 +813,7 @@ function Test-CameraEndpoint {
         ($maxCaptureMs -le 2500) -and
         ($streamBytes -gt 4096) -and
         ($streamFrames -ge 40) -and
-        ($streamFps -ge 18.0) -and
+        ($streamFps -ge 19.5) -and
         ($afterCaptureCount -gt $beforeCaptureCount) -and
         ($afterFailures -eq $beforeFailures) -and
         ($consecutiveFailures -eq 0) -and
@@ -830,11 +836,21 @@ function Test-CameraEndpoint {
         ($brightnessJson.success -eq $true) -and
         ($brightnessJson.verified -eq $true) -and
         ([int]$brightnessJson.effective -eq 1) -and
+        ($gainCeilingJson.applied -eq $true) -and
+        ($gainCeilingJson.success -eq $true) -and
+        ($gainCeilingJson.verified -eq $true) -and
+        ([int]$gainCeilingJson.effective -eq 124) -and
+        ($gainCeilingRestoreJson.applied -eq $true) -and
+        ($gainCeilingRestoreJson.success -eq $true) -and
+        ($gainCeilingRestoreJson.verified -eq $true) -and
+        ([int]$gainCeilingRestoreJson.effective -eq 248) -and
         ($cameraSelectFailures.Count -eq 0) -and
         ($invalidQualityJson.applied -eq $false) -and
         ($invalidQualityJson.error -eq 'out_of_range') -and
         ($hexCameraJson.applied -eq $false) -and
         ($hexCameraJson.error -eq 'invalid_value') -and
+        ($badGainCeilingJson.applied -eq $false) -and
+        ($badGainCeilingJson.error -eq 'out_of_range') -and
         ($hexRegJson.ok -eq $false) -and
         ($hexRegJson.error -eq 'invalid_request') -and
         ($es8388WriteJson.ok -eq $true) -and
@@ -855,7 +871,7 @@ function Test-CameraEndpoint {
 
     return [pscustomobject]@{
         Passed = $ok
-        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} active_control_ms={10} active_control_success={11} post_active_jpg={12} capture_before={13} capture_after={14} failures_before={15} failures_after={16} consecutive_failures={17} recovery_count={18} preset={19}/{20} preset_success={21} reg_value={22} quality={23} quality_success={24} quality_verified={25} brightness_success={26} brightness_verified={27} select_control_failures={28} invalid_quality={29} hex_camera={30} hex_reg={31} es8388_volume={32} es8388_masked_unsafe={33} unsafe_write={34} bad_frame={35} bad_value={36} bad_device={37} wrapped_reg={38}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $activeControlWatch.ElapsedMilliseconds, $activeControlJson.success, $postActiveJpgLength, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $consecutiveFailures, $recoveryCount, $presetJson.verified_count, $presetJson.control_count, $presetJson.success, $regJson.value, $quality, $controlJson.success, $controlJson.verified, $brightnessJson.success, $brightnessJson.verified, $(if ($cameraSelectFailures.Count) { $cameraSelectFailures -join '; ' } else { '(none)' }), $invalidQualityJson.error, $hexCameraJson.error, $hexRegJson.error, $es8388WriteJson.value, $es8388MaskedUnsafeJson.error, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
+        Details = ('online={0} psram={1} name={2} pid={3} jpg_bytes={4} avg_jpg_ms={5} max_jpg_ms={6} stream_bytes={7} stream_frames={8} stream_fps={9} active_control_ms={10} active_control_success={11} post_active_jpg={12} capture_before={13} capture_after={14} failures_before={15} failures_after={16} consecutive_failures={17} recovery_count={18} preset={19}/{20} preset_success={21} reg_value={22} quality={23} quality_success={24} quality_verified={25} brightness_success={26} brightness_verified={27} gainceiling={28}->{29} bad_gainceiling={30} select_control_failures={31} invalid_quality={32} hex_camera={33} hex_reg={34} es8388_volume={35} es8388_masked_unsafe={36} unsafe_write={37} bad_frame={38} bad_value={39} bad_device={40} wrapped_reg={41}' -f $cameraJson.camera.online, $cameraJson.camera.psram, $cameraJson.camera.name, $cameraJson.camera.pid, $jpgLength, $avgCaptureMs, $maxCaptureMs, $streamBytes, $streamFrames, $streamFps, $activeControlWatch.ElapsedMilliseconds, $activeControlJson.success, $postActiveJpgLength, $beforeCaptureCount, $afterCaptureCount, $beforeFailures, $afterFailures, $consecutiveFailures, $recoveryCount, $presetJson.verified_count, $presetJson.control_count, $presetJson.success, $regJson.value, $quality, $controlJson.success, $controlJson.verified, $brightnessJson.success, $brightnessJson.verified, $gainCeilingJson.effective, $gainCeilingRestoreJson.effective, $badGainCeilingJson.error, $(if ($cameraSelectFailures.Count) { $cameraSelectFailures -join '; ' } else { '(none)' }), $invalidQualityJson.error, $hexCameraJson.error, $hexRegJson.error, $es8388WriteJson.value, $es8388MaskedUnsafeJson.error, $unsafeWriteJson.error, $badFrameJson.error, $badValueJson.error, $badDeviceJson.error, $wrappedRegJson.error)
     }
 }
 
@@ -1806,7 +1822,7 @@ try {
         $htmlText.Contains('/api/live') -and
         $htmlText.Contains('stream.mjpg') -and
         $htmlText.Contains('const CAMERA_STREAM_PORT = 81') -and
-        $htmlText.Contains('const CAMERA_STREAM_TARGET_FPS = 20') -and
+        $htmlText.Contains('const CAMERA_STREAM_TARGET_FPS = 24') -and
         $htmlText.Contains('/api/camera/control') -and
         $htmlText.Contains('/api/camera/preset') -and
         $htmlText.Contains('/api/register') -and
@@ -1844,6 +1860,8 @@ try {
         $htmlText.Contains('常用寄存器') -and
         $htmlText.Contains('camSpecialEffect') -and
         $htmlText.Contains('camWbMode') -and
+        $htmlText.Contains('1023 约 63.9x') -and
+        $htmlText.Contains('status.camera.gainceiling) >= 16') -and
         $htmlText.Contains('allVolumeControl') -and
         $htmlText.Contains('data-camera-preset') -and
         $htmlText.Contains('cameraControlInputKeys') -and
@@ -1907,12 +1925,13 @@ $reportLines += '- Live dashboard exposes sensor telemetry, DHT raw frame bytes 
 $reportLines += '- Boot-to-dashboard readiness exposes setup timing telemetry and limits boot history parsing to the latest dashboard rows'
 $reportLines += '- LCD recovery can be triggered without a board power-cycle, holds a high-contrast visible pixel test pattern, and proves XL9555 power/reset pins are outputs driven high after reinit and software reboot'
 $reportLines += '- Camera JPEG capture, OPI PSRAM availability, active-stream camera controls and safe decimal hardware register access are verified through HTTP APIs'
+$reportLines += '- OV5640 gain ceiling uses the sensor raw 10-bit decimal register value instead of the generic 0-6 enum and round-trips through /api/camera/control'
 $reportLines += '- Peripheral register controls expose Chinese decimal guidance, safe writable ranges, and blocked unsafe writes'
 $reportLines += '- LittleFS diagnostic JSONL logging records camera, peripheral, register, config and system errors and is exposed through dashboard/API download and clear controls'
 $reportLines += '- Dashboard controls keep user edits during 0.5s live refresh, with executable JavaScript behavior coverage, and expose verified dropdown camera/AP3216C/QMA6100P/ES8388 presets'
 $reportLines += '- Normal camera and peripheral settings use dropdown selectors, with manual decimal register input retained only for diagnostics'
 $reportLines += '- Status LED blink rate is linked to CPU usage and exposed through /api/status and /api/live telemetry'
-$reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a measured 20 FPS target'
+$reportLines += '- Camera dashboard uses a dedicated MJPEG stream on port 81 with a 24 FPS scheduler target to keep measured throughput near or above 20 FPS'
 $reportLines += '- HTML dashboard uses completion-based /api/live polling for 0.5s visible telemetry refresh, including ADC input voltage, and keeps full status/history snapshots at 10s'
 $reportLines += '- Hardware CI runs a 2Hz /api/live soak to check live polling stability'
 $reportLines += '- HTML dashboard includes board speaker playback/self-test controls, alert thresholds and CSV log availability'
